@@ -92,42 +92,48 @@ def fetch_and_filter_stocks():
 def generate_charts(ticker):
     print(f"正在生成 {ticker} 的圖表...")
     try:
-        # 加上 auto_adjust=True 確保欄位名稱一致，並使用 group_by='column'
-        df_daily = yf.download(ticker, period="2y", interval="1d", progress=False, auto_adjust=True)
+        # 下載資料
+        df_daily = yf.download(ticker, period="2y", interval="1d", progress=False)
         
-        if df_daily.empty or len(df_daily) < 200: 
-            print(f"⚠️ {ticker} 資料不足(需至少200日)或找不到資料")
+        if df_daily.empty or len(df_daily) < 200:
             return None, False
-        
+
         # 計算 200MA
         df_daily['200MA'] = df_daily['Close'].rolling(window=200).mean()
         
-        df_1m = yf.download(ticker, period="1d", interval="1m", progress=False, auto_adjust=True)
+        # --- 解決 ValueError 的終極寫法 ---
+        # 使用 .values[-1] 取得最後一個數值，這會跳過 Pandas 的 Index 比對邏輯
+        last_close = df_daily['Close'].values[-1]
+        last_ma200 = df_daily['200MA'].values[-1]
         
-        # --- 關鍵修正處：使用 .item() 或 .iloc[-1] 並確保轉換為標量 ---
-        # 我們取最後一筆資料並轉為 float 比較，確保結果是單一 bool 值
-        last_close = float(df_daily['Close'].iloc[-1])
-        last_ma200 = float(df_daily['200MA'].iloc[-1])
-        
-        is_above_200 = last_close > last_ma200
+        # 確保 is_above_200 是一個 Python bool
+        is_above_200 = bool(last_close > last_ma200)
+
+        df_1m = yf.download(ticker, period="1d", interval="1m", progress=False)
         
         fig = make_subplots(rows=2, cols=2, vertical_spacing=0.15, row_heights=[0.7, 0.3],
-                            subplot_titles=(f"{ticker} 1Y Daily (Yellow=200MA)", f"{ticker} 1m Intraday", "Daily Vol", "1m Vol"))
+                            subplot_titles=(f"{ticker} Daily", f"{ticker} 1m Intraday", "Daily Vol", "1m Vol"))
         
-        fig.add_trace(go.Candlestick(x=df_daily.index, open=df_daily['Open'], high=df_daily['High'], low=df_daily['Low'], close=df_daily['Close']), row=1, col=1)
+        fig.add_trace(go.Candlestick(x=df_daily.index, open=df_daily['Open'], high=df_daily['High'], 
+                                     low=df_daily['Low'], close=df_daily['Close']), row=1, col=1)
         fig.add_trace(go.Scatter(x=df_daily.index, y=df_daily['200MA'], line=dict(color='yellow', width=2)), row=1, col=1)
         
         if not df_1m.empty:
-            colors_1m = ['green' if c >= o else 'red' for o, c in zip(df_1m['Open'], df_1m['Close'])]
-            fig.add_trace(go.Candlestick(x=df_1m.index, open=df_1m['Open'], high=df_1m['High'], low=df_1m['Low'], close=df_1m['Close']), row=1, col=2)
+            # 確保 1m 的顏色計算也不會出錯
+            o_val = df_1m['Open'].values
+            c_val = df_1m['Close'].values
+            colors_1m = ['green' if c >= o else 'red' for o, c in zip(o_val, c_val)]
+            
+            fig.add_trace(go.Candlestick(x=df_1m.index, open=df_1m['Open'], high=df_1m['High'], 
+                                         low=df_1m['Low'], close=df_1m['Close']), row=1, col=2)
             fig.add_trace(go.Bar(x=df_1m.index, y=df_1m['Volume'], marker_color=colors_1m), row=2, col=2)
         
         fig.update_layout(height=600, width=1100, template="plotly_dark", showlegend=False, xaxis_rangeslider_visible=False)
         img_bytes = fig.to_image(format="png", engine="kaleido")
         return io.BytesIO(img_bytes), is_above_200
-
+        
     except Exception as e:
-        print(f"❌ {ticker} 生成圖表時發生錯誤: {e}")
+        print(f"❌ {ticker} 圖表生成失敗: {e}")
         return None, False
 
 # ==========================================
@@ -136,27 +142,43 @@ def generate_charts(ticker):
 def get_ai_insight(row, is_above_200):
     if not GEMINI_KEY: return "未偵測到 API Key。"
     
-    # 強制將 is_above_200 轉為 bool
+    # 這裡確保傳入 prompt 的字串是乾淨的
+    # bool() 轉換是為了解決 ValueError: The truth value of a Series is ambiguous
     status_200ma = "站上" if bool(is_above_200) else "低於"
     
     client = genai.Client(api_key=GEMINI_KEY)
-    prompt = f"""分析美股 {row['Ticker']} ({row['Company']})：
+    
+    # 回歸你要求的 Gemini 3.1 Pro Preview
+    model_id = "gemini-3.1-pro-preview" 
+    
+    prompt = f"""
+    分析美股 {row['Ticker']} ({row['Company']})：
     - 產業: {row['Industry']} (國家: {row['Country']})
     - 財務面: 市值 {row['MarketCap']}, P/E Ratio: {row['PE']}
     - 價格: {row['Price']} (今日漲幅 {row['Change']}%)
     - 技術面: {status_200ma} 200MA。
-    請深度思考並給出：1. 贏面分數(0-100) 2. 具體買進/賣出結論 3. 操作建議。"""
+    
+    請身為專業研究員進行思考並給出：
+    1. 贏面分數(0-100) 
+    2. 具體買進/賣出結論 
+    3. 詳細的操作建議與風險提示。
+    """
     
     try:
+        # 依照 Gemini 3.1 的 Thinking Config 設定
         response = client.models.generate_content(
-            model="gemini-2.0-flash-thinking-exp-01-21", # 建議使用最新版
+            model=model_id,
             contents=prompt,
-            config=types.GenerateContentConfig(thinking_config=types.ThinkingConfig(include_thoughts=True))
+            config=types.GenerateContentConfig(
+                thinking_config=types.ThinkingConfig(thinking_level="HIGH")
+            )
         )
-        time.sleep(10) # 縮短等待，Thinking 模型處理速度已提升
+        # Gemini 3.1 Thinking 比較耗時，保持足夠的 sleep 避免 Rate Limit
+        time.sleep(30) 
         return response.text
     except Exception as e:
-        return f"AI 分析失敗: {e}"
+        print(f"❌ Gemini 3.1 呼叫失敗: {e}")
+        return f"AI 分析失敗，錯誤代碼: {e}"
 
 # ==========================================
 # 5. PDF 專業報告生成 (更新表格欄位)
