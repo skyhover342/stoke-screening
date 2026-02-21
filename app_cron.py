@@ -87,17 +87,29 @@ def fetch_and_filter_stocks():
         return pd.DataFrame()
 
 # ==========================================
-# 3. 圖表生成 (保持不變)
+# 3. 圖表生成 (修正 MultiIndex 導致的 Series 錯誤)
 # ==========================================
 def generate_charts(ticker):
     print(f"正在生成 {ticker} 的圖表...")
     try:
-        df_daily = yf.download(ticker, period="2y", interval="1d", progress=False)
-        if df_daily.empty: return None, False
-        df_daily['200MA'] = df_daily['Close'].rolling(window=200).mean()
-        df_1m = yf.download(ticker, period="1d", interval="1m", progress=False)
+        # 加上 auto_adjust=True 確保欄位名稱一致，並使用 group_by='column'
+        df_daily = yf.download(ticker, period="2y", interval="1d", progress=False, auto_adjust=True)
         
-        is_above_200 = df_daily['Close'].iloc[-1] > df_daily['200MA'].iloc[-1]
+        if df_daily.empty or len(df_daily) < 200: 
+            print(f"⚠️ {ticker} 資料不足(需至少200日)或找不到資料")
+            return None, False
+        
+        # 計算 200MA
+        df_daily['200MA'] = df_daily['Close'].rolling(window=200).mean()
+        
+        df_1m = yf.download(ticker, period="1d", interval="1m", progress=False, auto_adjust=True)
+        
+        # --- 關鍵修正處：使用 .item() 或 .iloc[-1] 並確保轉換為標量 ---
+        # 我們取最後一筆資料並轉為 float 比較，確保結果是單一 bool 值
+        last_close = float(df_daily['Close'].iloc[-1])
+        last_ma200 = float(df_daily['200MA'].iloc[-1])
+        
+        is_above_200 = last_close > last_ma200
         
         fig = make_subplots(rows=2, cols=2, vertical_spacing=0.15, row_heights=[0.7, 0.3],
                             subplot_titles=(f"{ticker} 1Y Daily (Yellow=200MA)", f"{ticker} 1m Intraday", "Daily Vol", "1m Vol"))
@@ -105,14 +117,17 @@ def generate_charts(ticker):
         fig.add_trace(go.Candlestick(x=df_daily.index, open=df_daily['Open'], high=df_daily['High'], low=df_daily['Low'], close=df_daily['Close']), row=1, col=1)
         fig.add_trace(go.Scatter(x=df_daily.index, y=df_daily['200MA'], line=dict(color='yellow', width=2)), row=1, col=1)
         
-        colors_1m = ['green' if c >= o else 'red' for o, c in zip(df_1m['Open'], df_1m['Close'])]
-        fig.add_trace(go.Candlestick(x=df_1m.index, open=df_1m['Open'], high=df_1m['High'], low=df_1m['Low'], close=df_1m['Close']), row=1, col=2)
-        fig.add_trace(go.Bar(x=df_1m.index, y=df_1m['Volume'], marker_color=colors_1m), row=2, col=2)
+        if not df_1m.empty:
+            colors_1m = ['green' if c >= o else 'red' for o, c in zip(df_1m['Open'], df_1m['Close'])]
+            fig.add_trace(go.Candlestick(x=df_1m.index, open=df_1m['Open'], high=df_1m['High'], low=df_1m['Low'], close=df_1m['Close']), row=1, col=2)
+            fig.add_trace(go.Bar(x=df_1m.index, y=df_1m['Volume'], marker_color=colors_1m), row=2, col=2)
         
         fig.update_layout(height=600, width=1100, template="plotly_dark", showlegend=False, xaxis_rangeslider_visible=False)
         img_bytes = fig.to_image(format="png", engine="kaleido")
         return io.BytesIO(img_bytes), is_above_200
-    except:
+
+    except Exception as e:
+        print(f"❌ {ticker} 生成圖表時發生錯誤: {e}")
         return None, False
 
 # ==========================================
@@ -120,14 +135,16 @@ def generate_charts(ticker):
 # ==========================================
 def get_ai_insight(row, is_above_200):
     if not GEMINI_KEY: return "未偵測到 API Key。"
-    client = genai.Client(api_key=GEMINI_KEY)
     
-    # 這裡將你新增的 Country, PE, Market Cap 加入 Prompt 讓 AI 判斷更準
+    # 強制將 is_above_200 轉為 bool
+    status_200ma = "站上" if bool(is_above_200) else "低於"
+    
+    client = genai.Client(api_key=GEMINI_KEY)
     prompt = f"""分析美股 {row['Ticker']} ({row['Company']})：
     - 產業: {row['Industry']} (國家: {row['Country']})
     - 財務面: 市值 {row['MarketCap']}, P/E Ratio: {row['PE']}
     - 價格: {row['Price']} (今日漲幅 {row['Change']}%)
-    - 技術面: {'站上' if is_above_200 else '低於'} 200MA。
+    - 技術面: {status_200ma} 200MA。
     請深度思考並給出：1. 贏面分數(0-100) 2. 具體買進/賣出結論 3. 操作建議。"""
     
     try:
