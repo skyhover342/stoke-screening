@@ -23,13 +23,12 @@ MAX_CHANGE = 40.0
 # 2. 強韌版 Finviz 爬蟲 (解決 0 資料問題)
 # ==========================================
 def fetch_and_filter_stocks():
-    print("正在連線至 Finviz...")
+    print("正在連線至 Finviz 並執行精準篩選...")
     filters = "ind_stocksonly,sh_curvol_o500,sh_price_o1,sh_relvol_o5,ta_change_u"
     url = f"https://finviz.com/screener.ashx?v=111&f={filters}"
     
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-        'Accept-Language': 'en-US,en;q=0.9',
         'Referer': 'https://finviz.com/'
     }
     
@@ -37,23 +36,13 @@ def fetch_and_filter_stocks():
         resp = requests.get(url, headers=headers, timeout=20)
         soup = BeautifulSoup(resp.text, 'html.parser')
         
-        # 檢查是否被阻擋
-        page_title = soup.title.text if soup.title else ""
-        print(f"網頁標題: {page_title}")
-        if "Just a moment" in page_title:
-            print("❌ 被 Cloudflare 阻擋，嘗試備用解析...")
+        # 尋找資料表格中的所有行
+        rows = soup.find_all('tr', class_='screener-body-table-nw')
+        if not rows:
+            # 備用：若 class 變動，找 table-light
+            table = soup.find('table', class_='table-light')
+            rows = table.find_all('tr')[1:] if table else []
 
-        # 強韌定位：尋找包含 Ticker 的表格
-        target_table = None
-        for table in soup.find_all('table'):
-            if "Ticker" in table.text[:200] and "Price" in table.text[:200]:
-                target_table = table
-                break
-        
-        if not target_table:
-            return pd.DataFrame()
-
-        rows = target_table.find_all('tr', valign="top")
         print(f"解析成功，發現原始資料列數: {len(rows)}")
         
         data = []
@@ -62,25 +51,54 @@ def fetch_and_filter_stocks():
             if len(tds) < 11: continue
             
             try:
+                # --- 精準索引校對 (v=111 模式) ---
                 ticker = tds[1].text.strip()
                 industry = tds[4].text.strip()
-                change_val = float(tds[9].text.strip('%'))
-                rel_vol = float(tds[10].text.strip())
+                price_str = tds[8].text.strip()
+                change_str = tds[9].text.strip('%')
                 
-                if any(x in industry for x in EXCLUDE_INDUSTRIES): continue
-                if change_val > MAX_CHANGE: continue
+                # 在 v=111 下，Rel Vol 通常在最後一欄 (Index 11)，Volume 在 Index 10
+                # 我們用 Try-Except 來確保抓到正確的數值
+                volume_str = tds[10].text.strip()
+                rel_vol_str = tds[11].text.strip() if len(tds) > 11 else "0"
+                
+                # 轉化數值
+                change_val = float(change_str)
+                rel_vol = float(rel_vol_str)
+                price = float(price_str)
+
+                # DEBUG: 在日誌印出抓到的資料，確保沒抓錯位
+                # print(f"檢查中: {ticker} | 漲幅: {change_val}% | 相對量: {rel_vol} | 行業: {industry}")
+
+                # 執行排除邏輯
+                if any(x in industry for x in EXCLUDE_INDUSTRIES):
+                    # print(f"排除 {ticker}: 屬於殼公司/SPAC")
+                    continue
+                if change_val > MAX_CHANGE:
+                    # print(f"排除 {ticker}: 漲幅過大 ({change_val}%)")
+                    continue
                 
                 data.append({
-                    "Ticker": ticker, "Company": tds[2].text.strip(),
-                    "Sector": tds[3].text.strip(), "Industry": industry,
-                    "Price": float(tds[8].text.strip()), "Change": change_val,
-                    "Rel_Vol": rel_vol, "Volume": tds[11].text.strip()
+                    "Ticker": ticker,
+                    "Company": tds[2].text.strip(),
+                    "Sector": tds[3].text.strip(),
+                    "Industry": industry,
+                    "Price": price,
+                    "Change": change_val,
+                    "Rel_Vol": rel_vol,
+                    "Volume": volume_str
                 })
-            except: continue
+            except Exception as e:
+                # 如果這行印出來，代表索引真的抓錯了
+                # print(f"解析股票列失敗: {e}")
+                continue
                 
-        return pd.DataFrame(data)
+        df = pd.DataFrame(data)
+        print(f"過濾完成，最終入榜數量: {len(df)}")
+        return df
+
     except Exception as e:
-        print(f"爬蟲發生錯誤: {e}")
+        print(f"連線或解析發生嚴重錯誤: {e}")
         return pd.DataFrame()
 
 # ==========================================
