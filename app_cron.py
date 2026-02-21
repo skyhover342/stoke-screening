@@ -200,12 +200,26 @@ def create_final_report(df):
 # ==========================================
 if __name__ == "__main__":
     start_time = time.time()
-    stock_df = fetch_and_filter_stocks()
-    
-    if not stock_df.empty:
-        print(f"找到 {len(stock_df)} 支符合條件的股票。開始深度研究...")
-        create_final_report(stock_df)
-    else:
-        print("今日無符合條件的股票。")
-    
-    print(f"總執行時間: {round((time.time() - start_time)/60, 2)} 分鐘")
+    try:
+        stock_df = fetch_and_filter_stocks()
+        
+        if not stock_df.empty:
+            print(f"找到 {len(stock_df)} 支符合條件的股票。開始深度研究...")
+            create_final_report(stock_df)
+        else:
+            # 建立一個簡單的空白報告，避免 GitHub Action 報錯
+            print("今日無符合條件的股票，生成空白報告。")
+            pdf = FPDF()
+            pdf.add_page()
+            pdf.set_font("Arial", size=12)
+            pdf.cell(200, 10, txt="No stocks matched the criteria today.", ln=1, align='C')
+            pdf.output("report.pdf")
+            
+    except Exception as e:
+        print(f"程式執行發生嚴重錯誤: {e}")
+        # 發生錯誤也留下一份錯誤紀錄 PDF
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("Arial", size=12)
+        pdf.cell(200, 10, txt=f"Error occurred: {str(e)}", ln=1, align='C')
+        pdf.output("report.pdf")
