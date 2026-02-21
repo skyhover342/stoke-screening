@@ -23,29 +23,61 @@ MAX_CHANGE = 40.0  # 排除漲幅過大的標的
 # 2. 資料抓取與過濾 (Finviz)
 # ==========================================
 def fetch_and_filter_stocks():
-    print("正在從 Finviz 抓取符合條件的股票...")
-    # 條件：Price > 1, Vol > 500k, Rel Vol > 5, Price Up
+    print("正在嘗試連線至 Finviz...")
     filters = "sh_price_o1,sh_curvol_o500,sh_relvol_o5,ta_change_u"
     url = f"https://finviz.com/screener.ashx?v=111&f={filters}"
-    headers = {'User-Agent': 'Mozilla/5.0'}
+    
+    # 強化版 Header：包含來源網址與更詳細的瀏覽器資訊
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Referer': 'https://finviz.com/',
+        'Connection': 'keep-alive'
+    }
     
     try:
-        resp = requests.get(url, headers=headers, timeout=15)
+        resp = requests.get(url, headers=headers, timeout=20)
+        
+        # DEBUG: 印出狀態碼
+        print(f"Finviz 回應狀態碼: {resp.status_code}")
+        
+        if resp.status_code != 200:
+            print("警告：Finviz 拒絕了連線要求。")
+            return pd.DataFrame()
+
         soup = BeautifulSoup(resp.text, 'html.parser')
-        table = soup.find('table', class_='table-light')
+        
+        # 尋找所有表格，嘗試定位包含 Ticker 的那一個
+        tables = soup.find_all('table')
+        target_table = None
+        for t in tables:
+            if "Ticker" in t.text and "Price" in t.text:
+                target_table = t
+                break
+        
+        if not target_table:
+            print("錯誤：找不到資料表格。Finviz 可能回傳了驗證碼頁面。")
+            # DEBUG: 印出前 500 個字元來看看內容是什麼
+            print("網頁內容片段:", resp.text[:500])
+            return pd.DataFrame()
         
         data = []
-        if table:
-            rows = table.find_all('tr')[1:] # 跳過表頭
-            for r in rows:
-                tds = r.find_all('td')
-                if len(tds) < 11: continue
-                
+        rows = target_table.find_all('tr')
+        print(f"找到 {len(rows)} 行原始資料。")
+
+        for r in rows:
+            tds = r.find_all('td')
+            # Finviz 篩選器的資料列通常有 11 個 td
+            if len(tds) < 11 or tds[1].text == "Ticker": continue
+            
+            try:
                 ticker = tds[1].text
                 industry = tds[4].text
-                change_val = float(tds[9].text.strip('%'))
+                change_str = tds[9].text.strip('%')
+                change_val = float(change_str) if change_str else 0.0
                 
-                # 過濾：排除殼公司與漲幅超過 40%
+                # 過濾邏輯
                 if any(x in industry for x in EXCLUDE_INDUSTRIES): continue
                 if change_val > MAX_CHANGE: continue
                 
@@ -54,15 +86,20 @@ def fetch_and_filter_stocks():
                     "Company": tds[2].text,
                     "Sector": tds[3].text,
                     "Industry": industry,
-                    "Market Cap": tds[6].text,
                     "Price": float(tds[8].text),
                     "Change": change_val,
                     "Rel_Vol": float(tds[10].text),
                     "Volume": tds[11].text
                 })
-        return pd.DataFrame(data)
+            except Exception as e:
+                continue
+                
+        df = pd.DataFrame(data)
+        print(f"過濾後符合條件的股票數量: {len(df)}")
+        return df
+
     except Exception as e:
-        print(f"抓取失敗: {e}")
+        print(f"抓取過程中發生異常: {e}")
         return pd.DataFrame()
 
 # ==========================================
