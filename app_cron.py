@@ -23,83 +23,70 @@ MAX_CHANGE = 40.0  # 排除漲幅過大的標的
 # 2. 資料抓取與過濾 (Finviz)
 # ==========================================
 def fetch_and_filter_stocks():
-    print("正在嘗試連線至 Finviz...")
-    filters = "sh_price_o1,sh_curvol_o500,sh_relvol_o5,ta_change_u"
+    print("正在連線至 Finviz 並執行精準篩選...")
+    # 這是你提供的精準條件網址參數
+    filters = "ind_stocksonly,sh_curvol_o500,sh_price_o1,sh_relvol_o5,ta_change_u"
     url = f"https://finviz.com/screener.ashx?v=111&f={filters}"
     
-    # 強化版 Header：包含來源網址與更詳細的瀏覽器資訊
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Referer': 'https://finviz.com/',
-        'Connection': 'keep-alive'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        'Referer': 'https://finviz.com/'
     }
     
     try:
         resp = requests.get(url, headers=headers, timeout=20)
-        
-        # DEBUG: 印出狀態碼
-        print(f"Finviz 回應狀態碼: {resp.status_code}")
-        
-        if resp.status_code != 200:
-            print("警告：Finviz 拒絕了連線要求。")
-            return pd.DataFrame()
-
         soup = BeautifulSoup(resp.text, 'html.parser')
         
-        # 尋找所有表格，嘗試定位包含 Ticker 的那一個
-        tables = soup.find_all('table')
-        target_table = None
-        for t in tables:
-            if "Ticker" in t.text and "Price" in t.text:
-                target_table = t
-                break
-        
-        if not target_table:
-            print("錯誤：找不到資料表格。Finviz 可能回傳了驗證碼頁面。")
-            # DEBUG: 印出前 500 個字元來看看內容是什麼
-            print("網頁內容片段:", resp.text[:500])
-            return pd.DataFrame()
+        # 定位數據表格
+        rows = soup.find_all('tr', class_='screener-body-table-nw') 
+        if not rows:
+            # 備用方案：尋找 table-light 內的 tr
+            table = soup.find('table', class_='table-light')
+            rows = table.find_all('tr')[1:] if table else []
+
+        print(f"網頁讀取成功，發現原始資料列數: {len(rows)}")
         
         data = []
-        rows = target_table.find_all('tr')
-        print(f"找到 {len(rows)} 行原始資料。")
-
         for r in rows:
             tds = r.find_all('td')
-            # Finviz 篩選器的資料列通常有 11 個 td
-            if len(tds) < 11 or tds[1].text == "Ticker": continue
+            if len(tds) < 12: continue # v=111 視圖至少有 12 欄
             
             try:
-                ticker = tds[1].text
-                industry = tds[4].text
-                change_str = tds[9].text.strip('%')
-                change_val = float(change_str) if change_str else 0.0
+                # 重新校對索引 (v=111 模式):
+                # 1:Ticker, 4:Industry, 8:Price, 9:Change, 10:RelVol, 11:Volume
+                ticker = tds[1].text.strip()
+                industry = tds[4].text.strip()
+                price = float(tds[8].text.strip())
+                change_val = float(tds[9].text.strip('%'))
+                rel_vol = float(tds[10].text.strip())
+                volume_str = tds[11].text.strip()
                 
-                # 過濾邏輯
+                # 執行你的排除邏輯
                 if any(x in industry for x in EXCLUDE_INDUSTRIES): continue
-                if change_val > MAX_CHANGE: continue
+                if change_val > MAX_CHANGE: continue # 排除漲幅過大 (>40%)
                 
-                data.append({
-                    "Ticker": ticker,
-                    "Company": tds[2].text,
-                    "Sector": tds[3].text,
-                    "Industry": industry,
-                    "Price": float(tds[8].text),
-                    "Change": change_val,
-                    "Rel_Vol": float(tds[10].text),
-                    "Volume": tds[11].text
-                })
+                # 既然 Finviz 已經篩選過 RelVol > 5，這裡我們做二次確認
+                if rel_vol >= 5.0:
+                    data.append({
+                        "Ticker": ticker,
+                        "Company": tds[2].text.strip(),
+                        "Sector": tds[3].text.strip(),
+                        "Industry": industry,
+                        "Price": price,
+                        "Change": change_val,
+                        "Rel_Vol": rel_vol,
+                        "Volume": volume_str,
+                        "Market Cap": tds[6].text.strip()
+                    })
             except Exception as e:
                 continue
                 
         df = pd.DataFrame(data)
-        print(f"過濾後符合條件的股票數量: {len(df)}")
+        print(f"過濾完成，最終入榜數量: {len(df)}")
         return df
 
     except Exception as e:
-        print(f"抓取過程中發生異常: {e}")
+        print(f"連線異常: {e}")
         return pd.DataFrame()
 
 # ==========================================
@@ -171,11 +158,20 @@ def get_ai_insight(row, is_above_200):
 # ==========================================
 # 5. PDF 報告生成器
 # ==========================================
+# 修正後的 PDF 基礎設定
 class PDFReport(FPDF):
     def header(self):
-        self.set_font('Arial', 'B', 16)
-        self.cell(0, 10, f'US Stock Momentum Report - {datetime.date.today()}', ln=True, align='C')
+        self.set_font('helvetica', 'B', 16) # 使用標準字體避免警告
+        self.cell(0, 10, text=f'US Stock AI Report - {datetime.date.today()}', align='C', new_x="LMARGIN", new_y="NEXT")
         self.ln(10)
+
+def generate_error_pdf(error_msg):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("helvetica", size=12)
+    # 修正參數：txt -> text, ln=1 -> new_x/new_y
+    pdf.cell(200, 10, text=error_msg, align='C', new_x="LMARGIN", new_y="NEXT")
+    pdf.output("report.pdf")
 
 def create_final_report(df):
     pdf = PDFReport()
