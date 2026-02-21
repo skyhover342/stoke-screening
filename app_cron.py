@@ -23,82 +23,84 @@ MAX_CHANGE = 40.0
 # 2. 強韌版 Finviz 爬蟲 (解決 0 資料問題)
 # ==========================================
 def fetch_and_filter_stocks():
-    print("正在連線至 Finviz 並執行精準篩選...")
+    print("正在執行『地毯式搜索』爬蟲邏輯...")
     filters = "ind_stocksonly,sh_curvol_o500,sh_price_o1,sh_relvol_o5,ta_change_u"
     url = f"https://finviz.com/screener.ashx?v=111&f={filters}"
     
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-        'Referer': 'https://finviz.com/'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Referer': 'https://finviz.com/',
+        'Accept-Language': 'en-US,en;q=0.9'
     }
     
     try:
         resp = requests.get(url, headers=headers, timeout=20)
+        if resp.status_code != 200:
+            print(f"❌ 連線失敗，狀態碼: {resp.status_code}")
+            return pd.DataFrame()
+
         soup = BeautifulSoup(resp.text, 'html.parser')
         
-        # 尋找資料表格中的所有行
-        rows = soup.find_all('tr', class_='screener-body-table-nw')
-        if not rows:
-            # 備用：若 class 變動，找 table-light
-            table = soup.find('table', class_='table-light')
-            rows = table.find_all('tr')[1:] if table else []
+        # --- 診斷階段 ---
+        title = soup.title.text if soup.title else "無標題"
+        print(f"成功進入網頁，標題: {title}")
 
-        print(f"解析成功，發現原始資料列數: {len(rows)}")
+        # 找出所有表格，過濾掉太小的，留下真正裝資料的
+        all_tables = soup.find_all('table')
+        data_table = None
+        for t in all_tables:
+            # 資料表格通常很長，且包含 Ticker 字眼
+            if len(t.find_all('tr')) > 5 and "Ticker" in t.text[:500]:
+                data_table = t
+                break
         
-        data = []
+        if not data_table:
+            print("❌ 錯誤：找不到資料表格內容。")
+            print("網頁內容片段 (前1000字):", resp.text[:1000]) # 這是 Debug 的關鍵
+            return pd.DataFrame()
+
+        rows = data_table.find_all('tr')
+        print(f"成功定位表格，原始行數: {len(rows)}")
+        
+        final_data = []
         for r in rows:
             tds = r.find_all('td')
-            if len(tds) < 11: continue
+            # 排除表頭 (第一列通常包含 'No.') 或欄位不足的列
+            if len(tds) < 10 or tds[0].text == "No.": continue
             
             try:
-                # --- 精準索引校對 (v=111 模式) ---
+                # 使用相對安全的位移，並在抓取時印出第一個 Ticker 作為確認
                 ticker = tds[1].text.strip()
                 industry = tds[4].text.strip()
-                price_str = tds[8].text.strip()
-                change_str = tds[9].text.strip('%')
+                price = tds[8].text.strip()
+                change = tds[9].text.strip().replace('%', '')
+                rel_vol = tds[10].text.strip()
                 
-                # 在 v=111 下，Rel Vol 通常在最後一欄 (Index 11)，Volume 在 Index 10
-                # 我們用 Try-Except 來確保抓到正確的數值
-                volume_str = tds[10].text.strip()
-                rel_vol_str = tds[11].text.strip() if len(tds) > 11 else "0"
+                # 排除邏輯
+                if any(x in industry for x in EXCLUDE_INDUSTRIES): continue
+                if float(change) > MAX_CHANGE: continue
                 
-                # 轉化數值
-                change_val = float(change_str)
-                rel_vol = float(rel_vol_str)
-                price = float(price_str)
-
-                # DEBUG: 在日誌印出抓到的資料，確保沒抓錯位
-                # print(f"檢查中: {ticker} | 漲幅: {change_val}% | 相對量: {rel_vol} | 行業: {industry}")
-
-                # 執行排除邏輯
-                if any(x in industry for x in EXCLUDE_INDUSTRIES):
-                    # print(f"排除 {ticker}: 屬於殼公司/SPAC")
-                    continue
-                if change_val > MAX_CHANGE:
-                    # print(f"排除 {ticker}: 漲幅過大 ({change_val}%)")
-                    continue
-                
-                data.append({
+                final_data.append({
                     "Ticker": ticker,
                     "Company": tds[2].text.strip(),
-                    "Sector": tds[3].text.strip(),
                     "Industry": industry,
-                    "Price": price,
-                    "Change": change_val,
-                    "Rel_Vol": rel_vol,
-                    "Volume": volume_str
+                    "Price": float(price),
+                    "Change": float(change),
+                    "Rel_Vol": float(rel_vol) if rel_vol != "-" else 0,
+                    "Volume": tds[11].text.strip() if len(tds) > 11 else "-"
                 })
             except Exception as e:
-                # 如果這行印出來，代表索引真的抓錯了
-                # print(f"解析股票列失敗: {e}")
+                # 如果某一列解析失敗，跳過它，不影響其他列
                 continue
                 
-        df = pd.DataFrame(data)
-        print(f"過濾完成，最終入榜數量: {len(df)}")
+        df = pd.DataFrame(final_data)
+        print(f"✅ 過濾完成，成功入榜數量: {len(df)}")
+        if not df.empty:
+            print(f"第一支股票範例: {df.iloc[0]['Ticker']} - {df.iloc[0]['Price']}")
         return df
 
     except Exception as e:
-        print(f"連線或解析發生嚴重錯誤: {e}")
+        print(f"爬蟲執行崩潰: {e}")
         return pd.DataFrame()
 
 # ==========================================
