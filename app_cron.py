@@ -1,5 +1,5 @@
-# 版本號碼：v1.1.5
-print(">>> [系統啟動] 正在執行 v1.1.5 版本：MACD、RSI 14 與導航按鈕優化...")
+# 版本號碼：v1.1.6
+print(">>> [系統啟動] 正在執行 v1.1.6 版本：卡片標題數據化與全技術指標整合...")
 
 import os, time, datetime, io, base64, requests
 import pandas as pd
@@ -16,7 +16,7 @@ except ImportError:
 # ==========================================
 # 1. 核心參數與測試開關
 # ==========================================
-VERSION = "v1.1.5"
+VERSION = "v1.1.6"
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 TARGET_MODEL = "models/gemini-2.5-flash"
 TEST_MODE = True 
@@ -52,12 +52,12 @@ def fetch_and_filter_stocks():
         return pd.DataFrame(mock)
 
 # ==========================================
-# 3. 專業繪圖 (MACD + RSI + SMA + Volume Overlay)
+# 3. 專業繪圖模組 (日線+1m)
 # ==========================================
 def generate_stock_images(ticker):
-    print(f">>> [分析] 繪製 {ticker} 深度指標圖表...")
+    print(f">>> [分析] 繪製 {ticker} 指標圖表...")
     try:
-        # 抓取 2 年資料以優化 SMA 200
+        # 抓取 2 年資料以確保 SMA200 完整
         df_all = yf.download(ticker, period="2y", interval="1d", progress=False)
         if isinstance(df_all.columns, pd.MultiIndex): df_all.columns = df_all.columns.get_level_values(0)
         
@@ -66,14 +66,14 @@ def generate_stock_images(ticker):
         df_all['SMA50'] = df_all['Close'].rolling(50).mean()
         df_all['SMA200'] = df_all['Close'].rolling(200).mean()
         
-        # MACD 計算
+        # MACD
         exp1 = df_all['Close'].ewm(span=12, adjust=False).mean()
         exp2 = df_all['Close'].ewm(span=26, adjust=False).mean()
         df_all['MACD'] = exp1 - exp2
         df_all['Signal'] = df_all['MACD'].ewm(span=9, adjust=False).mean()
         df_all['Hist'] = df_all['MACD'] - df_all['Signal']
         
-        # RSI 14 計算
+        # RSI 14
         delta = df_all['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
@@ -81,12 +81,12 @@ def generate_stock_images(ticker):
 
         df_1y = df_all.tail(252)
 
-        # 建立三層子圖：價格+量、MACD、RSI
+        # 建立三層子圖
         fig1 = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03, 
                             row_heights=[0.6, 0.2, 0.2], 
                             specs=[[{"secondary_y": True}], [{"secondary_y": False}], [{"secondary_y": False}]])
         
-        # 第一層：K線 + 均線 + 量
+        # 亮灰色成交量疊加
         fig1.add_trace(go.Bar(x=df_1y.index, y=df_1y['Volume'], marker_color='rgba(210, 210, 210, 0.7)', name="Vol"), row=1, col=1, secondary_y=True)
         fig1.add_trace(go.Candlestick(x=df_1y.index, open=df_1y['Open'], high=df_1y['High'], low=df_1y['Low'], close=df_1y['Close'], name="K"), row=1, col=1, secondary_y=False)
         fig1.add_trace(go.Scatter(x=df_1y.index, y=df_1y['SMA20'], line=dict(color='cyan', width=1.2), name="SMA20"), row=1, col=1)
@@ -94,21 +94,20 @@ def generate_stock_images(ticker):
         fig1.add_trace(go.Scatter(x=df_1y.index, y=df_1y['SMA200'], line=dict(color='yellow', width=2), name="SMA200"), row=1, col=1)
         fig1.update_yaxes(range=[0, df_1y['Volume'].max()*4], secondary_y=True, showgrid=False, row=1)
 
-        # 第二層：MACD
+        # MACD
         fig1.add_trace(go.Scatter(x=df_1y.index, y=df_1y['MACD'], line=dict(color='white', width=1.2), name="MACD"), row=2, col=1)
         fig1.add_trace(go.Scatter(x=df_1y.index, y=df_1y['Signal'], line=dict(color='yellow', width=1.2), name="Signal"), row=2, col=1)
-        colors = ['lime' if val >= 0 else 'red' for val in df_1y['Hist']]
-        fig1.add_trace(go.Bar(x=df_1y.index, y=df_1y['Hist'], marker_color=colors, name="Hist"), row=2, col=1)
+        fig1.add_trace(go.Bar(x=df_1y.index, y=df_1y['Hist'], marker_color=['lime' if v>=0 else 'red' for v in df_1y['Hist']], name="Hist"), row=2, col=1)
 
-        # 第三層：RSI 14
+        # RSI 14
         fig1.add_trace(go.Scatter(x=df_1y.index, y=df_1y['RSI'], line=dict(color='#00ff00', width=1.5), name="RSI14"), row=3, col=1)
         fig1.add_shape(type="line", x0=df_1y.index[0], y0=70, x1=df_1y.index[-1], y1=70, line=dict(color="red", dash="dash"), row=3, col=1)
         fig1.add_shape(type="line", x0=df_1y.index[0], y0=30, x1=df_1y.index[-1], y1=30, line=dict(color="red", dash="dash"), row=3, col=1)
 
-        fig1.update_layout(height=650, width=1000, template="plotly_dark", xaxis_rangeslider_visible=False, showlegend=True, 
+        fig1.update_layout(height=650, width=1020, template="plotly_dark", xaxis_rangeslider_visible=False, showlegend=True, 
                           legend=dict(orientation="h", y=1.03, x=1, xanchor="right"), margin=dict(l=10, r=10, t=30, b=10))
 
-        # --- 1分鐘線圖 ---
+        # 1分鐘線圖
         df_1m = yf.download(ticker, period="1d", interval="1m", progress=False)
         fig2_b64 = ""
         if not df_1m.empty:
@@ -122,7 +121,7 @@ def generate_stock_images(ticker):
                 fig2.add_annotation(x=idx, y=row['High'], text="▲ BUY" if row['Close'] > row['Open'] else "▼ SELL",
                                     font=dict(size=10, color=t_color), arrowcolor=t_color, bgcolor="black", yshift=10)
             fig2.update_yaxes(range=[0, df_1m['Volume'].max()*4], secondary_y=True)
-            fig2.update_layout(height=380, width=1000, template="plotly_dark", xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=30, b=10))
+            fig2.update_layout(height=400, width=1020, template="plotly_dark", xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=30, b=10))
             fig2_b64 = base64.b64encode(fig2.to_image(format="png")).decode('utf-8')
 
         img1_b64 = base64.b64encode(fig1.to_image(format="png")).decode('utf-8')
@@ -134,7 +133,7 @@ def generate_stock_images(ticker):
 # 4. AI 分析
 # ==========================================
 def get_ai_insight(row):
-    prompt = f"分析美股 {row['Ticker']}。目前價格 {row['Price']}, 漲幅 {row['Change']}%。請結合 MACD 與 RSI14 趨勢提供 150 字內繁體中文分析。"
+    prompt = f"分析 {row['Ticker']}。價格 {row['Price']}, MACD/RSI 趨勢。150字內繁體中文。"
     if TEST_MODE: return f"<small style='color:#666;'>[Prompt 預覽]: {prompt}</small>"
     if not GEMINI_KEY: return "❌ 缺少 API KEY"
     try:
@@ -145,7 +144,7 @@ def get_ai_insight(row):
     except: return "⚠️ AI 失敗"
 
 # ==========================================
-# 5. HTML 生成 (按鈕位置優化)
+# 5. HTML 生成 (卡片標題數據化)
 # ==========================================
 def create_html_report(df):
     html_header = f"""
@@ -153,20 +152,30 @@ def create_html_report(df):
     <html lang="zh-TW"><head><meta charset="UTF-8">
     <style>
         body {{ font-family: sans-serif; background: #f0f2f5; padding: 20px; }}
-        .container {{ max-width: 1050px; margin: 0 auto; }}
-        .summary-table {{ width: 100%; border-collapse: collapse; background: white; margin-bottom: 50px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); font-size: 12px; }}
+        .container {{ max-width: 1100px; margin: 0 auto; }}
+        .summary-table {{ width: 100%; border-collapse: collapse; background: white; margin-bottom: 50px; font-size: 12px; }}
         .summary-table th {{ background: #003366; color: white; padding: 12px; }}
         .summary-table td {{ border-bottom: 1px solid #eee; text-align: center; padding: 10px; cursor: pointer; }}
         .summary-table tr:hover {{ background: #d1dce5; cursor: pointer; }}
-        .stock-card {{ background: white; border-radius: 12px; margin-bottom: 60px; padding: 25px; box-shadow: 0 6px 20px rgba(0,0,0,0.15); scroll-margin-top: 20px; }}
-        .card-header {{ background: #003366; color: white; padding: 15px 20px; border-radius: 8px; margin-bottom: 15px; font-size: 20px; font-weight: bold; }}
-        .chart-stack {{ display: flex; flex-direction: column; gap: 20px; align-items: center; background: #1a1a1a; padding: 20px; border-radius: 8px; }}
-        .chart-stack img {{ width: 100%; max-width: 980px; height: auto; }}
-        .analysis-box {{ margin-top: 20px; line-height: 1.8; background: #f8fafc; padding: 20px; border-radius: 6px; position: relative; }}
-        .back-btn {{ display: inline-block; margin-top: 15px; background: #003366; color: white; text-decoration: none; padding: 8px 16px; border-radius: 4px; font-size: 12px; font-weight: bold; float: right; }}
+        
+        .stock-card {{ background: white; border-radius: 12px; margin-bottom: 60px; padding: 0; box-shadow: 0 6px 20px rgba(0,0,0,0.15); overflow: hidden; scroll-margin-top: 20px; }}
+        
+        /* 關鍵：數據化標題行樣式  */
+        .card-header-row {{ 
+            background: #003366; color: white; padding: 12px; 
+            display: grid; 
+            grid-template-columns: 80px 180px 120px 150px 100px 80px 80px 80px 1fr;
+            text-align: center; font-size: 13px; font-weight: bold; align-items: center;
+        }}
+        
+        .chart-stack {{ display: flex; flex-direction: column; gap: 20px; align-items: center; background: #1a1a1a; padding: 20px; }}
+        .chart-stack img {{ width: 100%; max-width: 1000px; height: auto; }}
+        .analysis-box {{ padding: 25px; line-height: 1.8; background: #f8fafc; font-size: 14px; border-top: 1px solid #eee; }}
+        .back-btn {{ display: inline-block; margin-top: 15px; background: #003366; color: white; text-decoration: none; padding: 8px 20px; border-radius: 4px; font-size: 12px; float: right; }}
     </style></head>
     <body><div class="container" id="top">
-        <h1 style="color:#003366; text-align:center;">📈 美股 AI 指標掃描報告 {VERSION}</h1>
+        <h1 style="color:#003366; text-align:center;">📊 美股 AI 全指標深度研究報告 {VERSION}</h1>
+        
         <table class="summary-table">
             <thead><tr><th>代碼</th><th>公司</th><th>板塊</th><th>產業</th><th>市值</th><th>P/E</th><th>價格</th><th>漲幅</th><th>成交量</th></tr></thead>
             <tbody>
@@ -174,28 +183,41 @@ def create_html_report(df):
     for _, row in df.iterrows():
         html_header += f"<tr onclick=\"window.location='#{row['Ticker']}';\"><td><b>{row['Ticker']}</b></td><td>{row['Company']}</td><td>{row['Sector']}</td><td>{row['Industry']}</td><td>{row['MarketCap']}</td><td>{row['PE']}</td><td>${row['Price']}</td><td style='color:red;'>+{row['Change']}%</td><td>{row['Volume']}</td></tr>"
     
+    html_header += "</tbody></table>"
+
+    # 分析卡片
     cards = ""
     for _, row in df.iterrows():
         img1, img2 = generate_stock_images(row['Ticker'])
         if img1:
             cards += f"""
             <div class="stock-card" id="{row['Ticker']}">
-                <div class="card-header">{row['Ticker']} - {row['Company']}</div>
+                <div class="card-header-row">
+                    <div>{row['Ticker']}</div>
+                    <div>{row['Company']}</div>
+                    <div>{row['Sector']}</div>
+                    <div>{row['Industry']}</div>
+                    <div>{row['MarketCap']}</div>
+                    <div>{row['PE']}</div>
+                    <div>${row['Price']}</div>
+                    <div style="color:#ffcccc;">+{row['Change']}%</div>
+                    <div>{row['Volume']}</div>
+                </div>
+                
                 <div class="chart-stack">
-                    <div style="color:white; font-size:12px;">Daily: SMA/MACD/RSI</div>
                     <img src="data:image/png;base64,{img1}">
-                    <div style="color:white; font-size:12px; margin-top:10px;">1m: Spike Radar</div>
                     <img src="data:image/png;base64,{img2}">
                 </div>
+                
                 <div class="analysis-box">
-                    <strong>🛡️ AI 策略師分析：</strong><br>{get_ai_insight(row)}
+                    <strong>🛡️ AI 策略師診斷：</strong><br>{get_ai_insight(row)}
                     <a href="#top" class="back-btn">⬆ 返回總表</a>
                     <div style="clear:both;"></div>
                 </div>
             </div>"""
     
-    with open("report.html", "w", encoding="utf-8") as f: f.write(html_header + "</tbody></table>" + cards + "</div></body></html>")
-    print(f"✅ 報告已產出 {VERSION}")
+    with open("report.html", "w", encoding="utf-8") as f: f.write(html_header + cards + "</div></body></html>")
+    print(f"✅ v1.1.6 報告已成功產出。")
 
 if __name__ == "__main__":
     df = fetch_and_filter_stocks()
