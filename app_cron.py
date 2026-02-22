@@ -18,9 +18,11 @@ from google.genai import types
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 EXCLUDE_INDUSTRIES = ['Shell Companies', 'Blank Check', 'SPAC']
 MAX_CHANGE = 40.0
+# 使用你診斷清單中確認可用的 Pro 版本
+TARGET_MODEL = "models/gemini-2.5-pro"
 
 # ==========================================
-# 2. 修正版 Finviz 爬蟲 (精準對齊 v=111 欄位)
+# 2. 強韌版 Finviz 爬蟲 (精準對齊 v=111 欄位)
 # ==========================================
 def fetch_and_filter_stocks():
     print("正在連線至 Finviz 並解析資料...")
@@ -51,10 +53,10 @@ def fetch_and_filter_stocks():
         data = []
         for r in rows:
             tds = r.find_all('td')
-            if len(tds) < 11: continue # v=111 至少有 11 欄以上
+            if len(tds) < 11: continue
             
             try:
-                # --- 精準對齊 v=111 欄位 ---
+                # 精準對齊 v=111 欄位
                 ticker     = tds[1].text.strip()
                 company    = tds[2].text.strip()
                 sector     = tds[3].text.strip()
@@ -66,7 +68,6 @@ def fetch_and_filter_stocks():
                 change_val = float(tds[9].text.strip('%'))
                 volume     = tds[10].text.strip()
 
-                # 排除特定產業與漲幅過大的標的
                 if any(x in industry for x in EXCLUDE_INDUSTRIES): continue
                 if change_val > MAX_CHANGE: continue
                 
@@ -75,38 +76,31 @@ def fetch_and_filter_stocks():
                     "Industry": industry, "Country": country, "MarketCap": mkt_cap,
                     "PE": pe_ratio, "Price": price, "Change": change_val, "Volume": volume
                 })
-            except Exception as e:
+            except:
                 continue
         
         df = pd.DataFrame(data)
-        print(f"解析成功，最終篩選出 {len(df)} 支標的")
+        print(f"解析成功，篩選出 {len(df)} 支標的")
         return df
-
     except Exception as e:
         print(f"爬蟲發生錯誤: {e}")
         return pd.DataFrame()
 
 # ==========================================
-# 3. 圖表生成 (修正 MultiIndex 導致的 Series 錯誤)
+# 3. 圖表生成 (解決 Series 判斷與警告問題)
 # ==========================================
 def generate_charts(ticker):
     print(f"正在生成 {ticker} 的圖表...")
     try:
-        # 下載資料
         df_daily = yf.download(ticker, period="2y", interval="1d", progress=False)
-        
         if df_daily.empty or len(df_daily) < 200:
             return None, False
 
-        # 計算 200MA
         df_daily['200MA'] = df_daily['Close'].rolling(window=200).mean()
         
-        # --- 解決 ValueError 的終極寫法 ---
-        # 使用 .values[-1] 取得最後一個數值，這會跳過 Pandas 的 Index 比對邏輯
+        # 解決 ValueError: 使用 .values[-1] 確保是純數值
         last_close = df_daily['Close'].values[-1]
         last_ma200 = df_daily['200MA'].values[-1]
-        
-        # 確保 is_above_200 是一個 Python bool
         is_above_200 = bool(last_close > last_ma200)
 
         df_1m = yf.download(ticker, period="1d", interval="1m", progress=False)
@@ -119,96 +113,77 @@ def generate_charts(ticker):
         fig.add_trace(go.Scatter(x=df_daily.index, y=df_daily['200MA'], line=dict(color='yellow', width=2)), row=1, col=1)
         
         if not df_1m.empty:
-            # 確保 1m 的顏色計算也不會出錯
-            o_val = df_1m['Open'].values
-            c_val = df_1m['Close'].values
+            o_val, c_val = df_1m['Open'].values, df_1m['Close'].values
             colors_1m = ['green' if c >= o else 'red' for o, c in zip(o_val, c_val)]
-            
             fig.add_trace(go.Candlestick(x=df_1m.index, open=df_1m['Open'], high=df_1m['High'], 
                                          low=df_1m['Low'], close=df_1m['Close']), row=1, col=2)
             fig.add_trace(go.Bar(x=df_1m.index, y=df_1m['Volume'], marker_color=colors_1m), row=2, col=2)
         
         fig.update_layout(height=600, width=1100, template="plotly_dark", showlegend=False, xaxis_rangeslider_visible=False)
-        img_bytes = fig.to_image(format="png", engine="kaleido")
-        return io.BytesIO(img_bytes), is_above_200
         
+        # 移除 engine='kaleido' 以消除警告
+        img_bytes = fig.to_image(format="png")
+        return io.BytesIO(img_bytes), is_above_200
     except Exception as e:
-        print(f"❌ {ticker} 圖表生成失敗: {e}")
+        print(f"❌ {ticker} 圖表出錯: {e}")
         return None, False
 
 # ==========================================
-# 4. Gemini 3.1 Thinking AI 分析 (強化資訊輸入)
+# 4. Gemini 2.5 Pro 分析 (強化容錯機制)
 # ==========================================
-def get_ai_insight(row, is_above_200, use_pro=False):
+def get_ai_insight(row, is_above_200):
     if not GEMINI_KEY: return "未偵測到 API Key。"
-    
-    # 確保 is_above_200 是布林值
-    status_200ma = "站上" if bool(is_above_200) else "低於"
     client = genai.Client(api_key=GEMINI_KEY)
     
-    # 根據你的清單設定精確的模型 ID
-    # 前幾名用 3.1 Pro，其餘用 3 Flash
-    model_id = "models/gemini-3.1-pro-preview" if use_pro else "models/gemini-3-flash-preview"
-    
-    prompt = f"""分析美股 {row['Ticker']} ({row['Company']})：
+    status_200ma = "站上" if bool(is_above_200) else "低於"
+    prompt = f"""
+    分析美股 {row['Ticker']} ({row['Company']})：
     - 產業: {row['Industry']} (國家: {row['Country']})
     - 財務面: 市值 {row['MarketCap']}, P/E Ratio: {row['PE']}
     - 價格: {row['Price']} (今日漲幅 {row['Change']}%)
     - 技術面: {status_200ma} 200MA。
-    請深度思考並給出：1. 贏面分數(0-100) 2. 具體買進/賣出結論 3. 操作建議。"""
+    請深度思考並給出：1. 贏面分數(0-100) 2. 具體買進/賣出結論 3. 操作建議。
+    """
 
-    retries = 2
-    while retries >= 0:
+    max_retries = 2
+    for attempt in range(max_retries + 1):
         try:
-            # 只有 Pro 模型才加上 thinking_config，因為 Flash 可能不支援高強度思考模式
-            config = None
-            if "pro" in model_id:
-                config = types.GenerateContentConfig(
-                    thinking_config=types.ThinkingConfig(thinking_level="HIGH")
-                )
-            
             response = client.models.generate_content(
-                model=model_id,
-                contents=prompt,
-                config=config
+                model=TARGET_MODEL,
+                contents=prompt
             )
-            
-            # 成功後依據模型等級實施冷卻
-            # Pro 需要更長的冷卻時間來躲避 429
-            wait_time = 45 if use_pro else 10
-            print(f"✅ {row['Ticker']} 分析完成 ({model_id})，冷卻 {wait_time} 秒...")
-            time.sleep(wait_time)
+            # Pro 版本冷卻時間建議拉長，避免 429
+            time.sleep(35) 
             return response.text
-
         except Exception as e:
-            if "429" in str(e) and retries > 0:
-                print(f"⚠️ 觸發配額限制，正在重試並等待... (剩餘次數: {retries})")
-                time.sleep(60) # 遇到 429 強制停一分鐘
-                retries -= 1
+            err_str = str(e)
+            if "429" in err_str or "503" in err_str:
+                wait_sec = (attempt + 1) * 30
+                print(f"⚠️ {TARGET_MODEL} 繁忙 ({err_str[:20]})，等待 {wait_sec}s 重試...")
+                time.sleep(wait_sec)
             else:
-                print(f"❌ {model_id} 請求失敗: {e}")
-                return f"分析失敗: {e}"
+                return f"AI 分析失敗: {e}"
+    return "已達最大重試次數，略過分析。"
 
 # ==========================================
-# 5. PDF 專業報告生成 (更新表格欄位)
+# 5. PDF 報告生成與調度
 # ==========================================
 class PDFReport(FPDF):
     def header(self):
         self.set_font('helvetica', 'B', 16)
-        self.cell(0, 10, text=f'US Stock AI Report - {datetime.date.today()}', align='C', new_x="LMARGIN", new_y="NEXT")
+        self.cell(0, 10, text=f'US Stock AI Report - {datetime.date.today()}', align='C', ln=True)
         self.ln(10)
 
 def create_report(df):
     pdf = PDFReport()
     pdf.set_auto_page_break(auto=True, margin=15)
     
-    # 1. 製作首頁摘要表格
+    # --- 頁面 1：摘要表格 ---
     pdf.add_page()
     pdf.set_font('helvetica', 'B', 12)
-    pdf.cell(0, 10, text="Market Scan Summary:", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 10, text="Market Scan Summary (Top Movers):", ln=True)
     pdf.ln(5)
     
-    # 表格標頭 (對應你要求的欄位)
     pdf.set_font('helvetica', 'B', 8)
     col_widths = [20, 45, 30, 25, 25, 20, 25]
     headers = ['Ticker', 'Industry', 'Country', 'Mkt Cap', 'P/E', 'Price', 'Change%']
@@ -216,7 +191,6 @@ def create_report(df):
         pdf.cell(col_widths[i], 10, text=col, border=1, align='C')
     pdf.ln()
 
-    # 填入資料列
     pdf.set_font('helvetica', '', 8)
     for _, row in df.iterrows():
         pdf.cell(20, 10, text=str(row['Ticker']), border=1)
@@ -225,48 +199,35 @@ def create_report(df):
         pdf.cell(25, 10, text=str(row['MarketCap']), border=1)
         pdf.cell(25, 10, text=str(row['PE']), border=1)
         pdf.cell(20, 10, text=str(row['Price']), border=1)
-        pdf.cell(25, 10, text=f"{row['Change']}%", border=1, new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(25, 10, text=f"{row['Change']}%", border=1, ln=True)
 
-    # 2. 逐一生成個股詳細頁面 (重點：在這裡進行 Pro/Flash 分流)
-    # 我們限制最多分析 15 支，避免 GitHub Action 執行過久
-    for i, (index, row) in enumerate(df.head(15).iterrows()):
+    # --- 頁面 2+：個股分析 (最多 12 支，確保 Pro 配額) ---
+    for i, (index, row) in enumerate(df.head(12).iterrows()):
         ticker = row['Ticker']
         img_buf, is_above_200 = generate_charts(ticker)
+        if img_buf is None: continue
         
-        if img_buf is None:
-            continue
-            
-        # --- 智能分流判斷 ---
-        # 前 3 支用 3.1 Pro 深度思考，剩下的用 3 Flash 快速分析
-        use_pro = True if i < 3 else False
-        ai_text = get_ai_insight(row, is_above_200, use_pro=use_pro)
+        ai_text = get_ai_insight(row, is_above_200)
         
-        # 新增一個 PDF 頁面
         pdf.add_page()
         pdf.set_font('helvetica', 'B', 14)
-        pdf.cell(0, 10, text=f"Detailed Analysis: {ticker} - {row['Company']}", new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 10, text=f"Detailed Analysis: {ticker} - {row['Company']}", ln=True)
         
-        # 插入圖片
         img_path = f"temp_{ticker}.png"
         with open(img_path, "wb") as f: f.write(img_buf.getbuffer())
         pdf.image(img_path, x=10, y=30, w=190)
         
-        # 插入 AI 分析文字
         pdf.set_y(150)
         pdf.set_font('helvetica', 'B', 12)
-        pdf.cell(0, 10, text="AI Strategist Thinking Insight:", new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 10, text="Gemini 2.5 Pro Strategist Insight:", ln=True)
         pdf.set_font('helvetica', '', 10)
         
-        # 處理特殊字元並寫入
         clean_text = ai_text.replace('\u2022', '-').encode('latin-1', 'ignore').decode('latin-1')
         pdf.multi_cell(0, 6, text=clean_text)
-        
-        # 刪除暫存圖檔
         os.remove(img_path)
 
-    # 3. 儲存 PDF
     pdf.output("report.pdf")
-    print("✅ 最終報告已生成：report.pdf")
+    print("✅ 最終報告已成功生成：report.pdf")
 
 # ==========================================
 # 6. 主執行流程
@@ -274,6 +235,7 @@ def create_report(df):
 if __name__ == "__main__":
     df = fetch_and_filter_stocks()
     if not df.empty:
-        create_report(df)
+        # 如果標的太多，我們限制前 15 支進入摘要，前 12 支進入深度分析
+        create_report(df.head(15))
     else:
         print("今日無符合標的。")
