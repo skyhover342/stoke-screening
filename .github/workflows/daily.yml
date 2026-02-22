@@ -20,7 +20,7 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          pip install pandas yfinance requests beautifulsoup4 plotly kaleido
+          pip install pandas yfinance requests beautifulsoup4 plotly kaleido google-genai
 
       - name: Run Analysis Script
         env:
