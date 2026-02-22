@@ -1,13 +1,13 @@
-name: Stock AI Daily Analysis
+name: Stock Analysis Auto Run
 
 on:
-  schedule:
-    # 台灣時間 06:00 (UTC 22:00) 執行
-    - cron: '0 22 * * *'
-  workflow_dispatch: # 讓你可以隨時手動點擊按鈕測試
+  push:
+    branches:
+      - main  # 只要您 push 到 main 分支，就會觸發
+  workflow_dispatch: # 保留手動執行的按鈕
 
 jobs:
-  analyze:
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -20,9 +20,9 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          pip install pandas yfinance beautifulsoup4 requests plotly kaleido fpdf2 google-genai
+          pip install pandas yfinance requests beautifulsoup4 plotly kaleido
 
-      - name: Run Stock Analysis
+      - name: Run Analysis Script
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python app_cron.py
@@ -30,5 +30,5 @@ jobs:
       - name: Upload Report
         uses: actions/upload-artifact@v4
         with:
-          name: Stock-Report
+          name: stock-report-v1.1.0
           path: report.html
