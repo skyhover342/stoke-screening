@@ -1,5 +1,5 @@
-# 版本號碼：v1.4.2
-print(">>> [系統啟動] 正在執行 v1.4.2：優化 MAX 時段邏輯，確保新股顯示完整歷史...")
+# 版本號碼：v1.4.3
+print(">>> [系統啟動] 正在執行 v1.4.3：將日線圖日期標籤移至第一層主圖...")
 
 import os, time, datetime, io, base64, requests, glob, json
 import pandas as pd
@@ -17,7 +17,7 @@ except ImportError:
 # ==========================================
 # 1. 核心參數
 # ==========================================
-VERSION = "v1.4.2"
+VERSION = "v1.4.3"
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 TARGET_MODEL = "models/gemini-2.5-flash"
 TEST_MODE = True 
@@ -61,25 +61,35 @@ def fetch_and_filter_stocks():
     except: return pd.DataFrame()
 
 # ==========================================
-# 3. 專業繪圖 (強化 MACD 顯色與動態時段)
+# 3. 專業繪圖 (日期移至第一層)
 # ==========================================
 def generate_chart(df_plot, height=800):
-    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03, 
-                        row_heights=[0.55, 0.25, 0.2], 
+    # 增加垂直間距 vertical_spacing 為日期標籤騰出空間
+    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.06, 
+                        row_heights=[0.5, 0.28, 0.22], 
                         specs=[[{"secondary_y": True}], [{"secondary_y": False}], [{"secondary_y": False}]])
     
+    # Row 1: K線層
     fig.add_trace(go.Bar(x=df_plot.index, y=df_plot['Volume'], marker_color='rgba(210, 210, 210, 0.8)', showlegend=False), row=1, col=1, secondary_y=True)
     fig.add_trace(go.Candlestick(x=df_plot.index, open=df_plot['Open'], high=df_plot['High'], low=df_plot['Low'], close=df_plot['Close'], name="Price"), row=1, col=1, secondary_y=False)
     fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['SMA20'], line=dict(color='cyan', width=1.2), name="MA20"), row=1, col=1)
     fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['SMA50'], line=dict(color='orange', width=1.5), name="MA50"), row=1, col=1)
     fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['SMA200'], line=dict(color='yellow', width=2.2), name="MA200"), row=1, col=1)
     
-    # MACD 顯色校準 (無邊框模式)
+    # 重點：將日期標籤顯示在第一層 (Row 1)
+    fig.update_xaxes(showticklabels=True, row=1, col=1, tickfont=dict(size=10, color='gray'))
+    # 隱藏下方子圖的 X 軸標籤
+    fig.update_xaxes(showticklabels=False, row=2, col=1)
+    fig.update_xaxes(showticklabels=False, row=3, col=1)
+
+    # Row 2: MACD (顯色強化)
     colors = ['rgba(0,255,0,0.9)' if v>=0 else 'rgba(255,0,0,0.9)' for v in df_plot['Hist']]
     fig.add_trace(go.Bar(x=df_plot.index, y=df_plot['Hist'], marker=dict(color=colors, line_width=0), name="Histogram"), row=2, col=1)
-    fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['MACD'], line=dict(color='#00FF00', width=1.8)), row=2, col=1)
-    fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['Signal'], line=dict(color='#A020F0', width=1.8)), row=2, col=1)
-    fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['RSI'], line=dict(color='#E0B0FF', width=2.2)), row=3, col=1)
+    fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['MACD'], line=dict(color='#00FF00', width=1.8), name="MACD"), row=2, col=1)
+    fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['Signal'], line=dict(color='#A020F0', width=1.8), name="Signal"), row=2, col=1)
+    
+    # Row 3: RSI
+    fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['RSI'], line=dict(color='#E0B0FF', width=2.2), name="RSI"), row=3, col=1)
     
     fig.update_yaxes(range=[0, df_plot['Volume'].max()*1.8], secondary_y=True, showgrid=False, row=1)
     fig.update_layout(height=height, width=1050, template="plotly_dark", xaxis_rangeslider_visible=False, barmode='overlay', margin=dict(l=10, r=10, t=30, b=10))
@@ -87,7 +97,6 @@ def generate_chart(df_plot, height=800):
 
 def generate_stock_images(ticker):
     try:
-        # 抓取 4 年資料以覆蓋 3 年或新股最長資料
         df_all = yf.download(ticker, period="4y", interval="1d", progress=False)
         if df_all.empty: return None, None, None, False
         if isinstance(df_all.columns, pd.MultiIndex): df_all.columns = df_all.columns.get_level_values(0)
@@ -100,14 +109,10 @@ def generate_stock_images(ticker):
         delta = df_all['Close'].diff(); gain = delta.where(delta > 0, 0).rolling(window=14, min_periods=1).mean(); loss = -delta.where(delta < 0, 0).rolling(window=14, min_periods=1).mean()
         df_all['RSI'] = 100 - (100 / (1 + gain/loss))
 
-        # 1Y 圖表
         img_1y = generate_chart(df_all.tail(252))
-        
-        # MAX 圖表：如果總筆數小於 756 (3年)，就抓全部；否則抓 756 筆
-        max_len = min(len(df_all), 756)
-        img_max = generate_chart(df_all.tail(max_len))
+        img_max = generate_chart(df_all.tail(min(len(df_all), 756)))
 
-        # 1分鐘圖 (整合盤後)
+        # 1分鐘圖 (維持校準)
         df_1m = yf.download(ticker, period="1d", interval="1m", progress=False, prepost=True)
         img_1m = ""
         if not df_1m.empty:
@@ -135,19 +140,19 @@ def generate_stock_images(ticker):
     except Exception as e:
         print(f"⚠️ {ticker} 繪圖異常: {e}"); return None, None, None, False
 
-# 批量 AI 分析邏輯
+# 批量 AI 分析邏輯 (維持穩定)
 def get_batch_ai_insights(df_subset):
     tickers = df_subset['Ticker'].tolist()
-    if TEST_MODE: return {t: f"<p style='color:#666;'>[測試] {t} 分析中...</p>" for t in tickers}
+    if TEST_MODE: return {t: f"<p style='color:#666;'>[測試模式] {t} 分析中...</p>" for t in tickers}
     data_summary = "".join([f"- {r['Ticker']}: ${r['Price']} ({r['Change']}%)\n" for _, r in df_subset.iterrows()])
-    prompt = f"分析美股技術趨勢，結合 MACD/RSI14 提供 100 字內繁體中文建議。必須回傳 JSON：{{\"Ticker\": \"內容\"}} \n數據：\n{data_summary}"
+    prompt = f"分析以下美股技術趨勢，結合 MACD/RSI14 提供建議。繁體中文。回傳純 JSON：{{\"Ticker\": \"分析內容\"}} \n數據：\n{data_summary}"
     try:
         client = genai.Client(api_key=GEMINI_KEY); response = client.models.generate_content(model=TARGET_MODEL, contents=prompt)
         raw_text = response.text.strip().replace('```json', '').replace('```', '')
         return json.loads(raw_text)
     except: return {t: "⚠️ 無法分析" for t in tickers}
 
-# HTML 生成 (切換 UI 優化)
+# HTML 生成 (1Y/MAX 切換)
 def create_html_report(df):
     today_str = datetime.date.today().strftime("%Y%m%d")
     os.makedirs("history", exist_ok=True)
