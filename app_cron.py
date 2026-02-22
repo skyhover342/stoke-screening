@@ -1,16 +1,10 @@
-print(">>> [系統檢查] 程式啟動中...") # 這是為了確認程式有沒有跑起來
+print(">>> [系統啟動] 正在初始化環境...")
 
 import os
 import time
 import datetime
 import io
-import sys
-
-# 強制排除多線程衝突
-os.environ["YF_NO_TICKER_CACHE"] = "1" 
-
 import pandas as pd
-import numpy as np
 import yfinance as yf
 import requests
 from bs4 import BeautifulSoup
@@ -21,27 +15,24 @@ from fpdf.enums import XPos, YPos
 from google import genai
 from google.genai import types
 
-print(">>> [系統檢查] 模組導入完成。")
-
 # ==========================================
 # 1. 核心參數
 # ==========================================
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
-TARGET_MODEL = "models/gemini-2.5-pro"
+# 根據你的診斷，Flash 2.0 目前是最穩定的選擇
+TARGET_MODEL = "models/gemini-2.0-flash" 
 EXCLUDE_INDUSTRIES = ['Shell Companies', 'Blank Check', 'SPAC']
 
 # ==========================================
 # 2. 強韌版 Finviz 爬蟲
 # ==========================================
 def fetch_and_filter_stocks():
-    print(">>> [步驟 1] 正在讀取 Finviz 數據...")
-    filters = "ind_stocksonly,sh_curvol_o500,sh_price_o1,sh_relvol_o5,ta_change_u"
-    url = f"https://finviz.com/screener.ashx?v=111&f={filters}"
-    
+    print(">>> [步驟 1] 正在抓取 Finviz 總表資料...")
+    url = "https://finviz.com/screener.ashx?v=111&f=ind_stocksonly,sh_curvol_o500,sh_price_o1,sh_relvol_o5,ta_change_u"
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     
     try:
-        resp = requests.get(url, headers=headers, timeout=15)
+        resp = requests.get(url, headers=headers, timeout=20)
         soup = BeautifulSoup(resp.text, 'html.parser')
         target_table = None
         for table in soup.find_all('table'):
@@ -58,9 +49,12 @@ def fetch_and_filter_stocks():
             if len(tds) < 11: continue
             try:
                 data.append({
-                    "Ticker": tds[1].text.strip(), "Company": tds[2].text.strip(),
-                    "Industry": tds[4].text.strip(), "Country": tds[5].text.strip(),
-                    "MarketCap": tds[6].text.strip(), "PE": tds[7].text.strip(),
+                    "Ticker": tds[1].text.strip(),
+                    "Company": tds[2].text.strip(),
+                    "Industry": tds[4].text.strip(),
+                    "Country": tds[5].text.strip(),
+                    "MarketCap": tds[6].text.strip(),
+                    "PE": tds[7].text.strip(),
                     "Price": float(tds[8].text.strip()), 
                     "Change": float(tds[9].text.strip('%'))
                 })
@@ -68,116 +62,157 @@ def fetch_and_filter_stocks():
         
         df = pd.DataFrame(data)
         df = df[~df['Industry'].isin(EXCLUDE_INDUSTRIES)]
-        print(f"✅ 成功獲取 {len(df)} 筆標的。")
+        print(f"✅ 成功獲取 {len(df)} 支潛力股。")
         return df
     except Exception as e:
         print(f"❌ 爬蟲出錯: {e}")
         return pd.DataFrame()
 
 # ==========================================
-# 3. 圖表生成 (徹底修復 NumPy 警告與 Kaleido 卡死)
+# 3. 圖表生成 (修正 NumPy 警告)
 # ==========================================
 def generate_charts(ticker):
-    print(f">>> [步驟 2] 處理 {ticker} 圖表...")
+    print(f">>> [圖表] 正在繪製 {ticker}...")
     try:
-        # 下載資料 (關閉線程避免卡死)
-        df_daily = yf.download(ticker, period="2y", interval="1d", progress=False, threads=False)
+        # 下載一年的日線
+        df_daily = yf.download(ticker, period="1y", interval="1d", progress=False, threads=False)
         if df_daily.empty: return None, False
 
-        # 修正 yfinance 的 MultiIndex 欄位問題
+        # 矯正多重索引欄位
         if isinstance(df_daily.columns, pd.MultiIndex):
             df_daily.columns = df_daily.columns.get_level_values(0)
 
         df_daily['200MA'] = df_daily['Close'].rolling(window=200).mean()
         
-        # --- 核心矯正：使用 .item() 解決 NumPy 警告 ---
-        # 將 Series 的最後一筆轉為純 Python float
+        # 修正 NumPy 警告：明確轉為純量
         last_close = float(df_daily['Close'].iloc[-1])
-        last_ma200 = float(df_daily['200MA'].iloc[-1]) if not pd.isna(df_daily['200MA'].iloc[-1]) else 0
+        ma_val = df_daily['200MA'].iloc[-1]
+        last_ma200 = float(ma_val) if not pd.isna(ma_val) else 0.0
         
         is_above_200 = last_close > last_ma200
 
         fig = make_subplots(rows=1, cols=1)
-        fig.add_trace(go.Candlestick(x=df_daily.index, open=df_daily['Open'], high=df_daily['High'], 
-                                     low=df_daily['Low'], close=df_daily['Close']))
-        fig.add_trace(go.Scatter(x=df_daily.index, y=df_daily['200MA'], line=dict(color='yellow', width=2)))
+        fig.add_trace(go.Candlestick(x=df_daily.index, open=df_daily['Open'], 
+                                     high=df_daily['High'], low=df_daily['Low'], 
+                                     close=df_daily['Close'], name="K-Line"))
+        fig.add_trace(go.Scatter(x=df_daily.index, y=df_daily['200MA'], 
+                                 line=dict(color='yellow', width=1.5), name="200MA"))
         
-        fig.update_layout(height=400, width=800, template="plotly_dark", xaxis_rangeslider_visible=False)
+        fig.update_layout(height=450, width=850, template="plotly_dark", 
+                          xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=30, b=10))
         
-        # 這裡不使用 engine 參數，讓系統自動處理
         img_bytes = fig.to_image(format="png")
         return io.BytesIO(img_bytes), is_above_200
     except Exception as e:
-        print(f"⚠️ {ticker} 圖表失敗: {e}")
+        print(f"⚠️ {ticker} 圖表出錯: {e}")
         return None, False
 
 # ==========================================
-# 4. AI 分析
+# 4. AI 分析 (強化 429 容錯)
 # ==========================================
 def get_ai_insight(row, is_above_200):
-    if not GEMINI_KEY: return "No API Key"
+    if not GEMINI_KEY: return "無 API KEY。"
+    
+    # 建立客戶端
     try:
         client = genai.Client(api_key=GEMINI_KEY)
         status = "站上" if is_above_200 else "低於"
-        prompt = f"分析美股 {row['Ticker']} ({row['Company']})，價格 {row['Price']}，目前{status} 200MA。請給出贏面分數(0-100)與買賣建議。"
+        prompt = f"分析美股 {row['Ticker']} ({row['Company']})。價格 {row['Price']}, 漲幅 {row['Change']}%, 目前{status} 200日均線。請用專業研究員語氣給出買賣分析與 1-100 的贏面分數。"
         
+        # 嘗試呼叫
         response = client.models.generate_content(model=TARGET_MODEL, contents=prompt)
-        time.sleep(30) # 降階後的 Pro 版冷卻時間
+        # Flash 模型冷卻時間較短，12 秒即可
+        time.sleep(12) 
         return response.text
     except Exception as e:
-        return f"AI 分析出錯: {e}"
+        if "429" in str(e):
+            print(f"⚠️ {row['Ticker']} 觸發頻率限制 (429)，將跳過此分析以保全報告。")
+            return "分析額度已滿，請查看圖表技術面。"
+        return f"分析失敗: {e}"
 
 # ==========================================
-# 5. PDF 報告 (新版語法)
+# 5. PDF 報告生成 (確保總表顯現)
 # ==========================================
 class PDFReport(FPDF):
     def header(self):
-        self.set_font('helvetica', 'B', 16)
-        self.cell(0, 10, text='US Stock AI Report', align='C', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        self.set_font('helvetica', 'B', 15)
+        self.cell(0, 10, text=f'Stock Analysis Report - {datetime.date.today()}', 
+                  align='C', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        self.ln(5)
 
 def create_report(df):
-    print(">>> [步驟 3] 正在生成 PDF 報告...")
+    print(">>> [步驟 3] 正在整合 PDF 報告...")
     pdf = PDFReport()
     pdf.set_auto_page_break(auto=True, margin=15)
-    pdf.add_page()
     
-    # 摘要表格
-    pdf.set_font('helvetica', 'B', 10)
-    for col in ['Ticker', 'Price', 'Change%', 'Mkt Cap']:
-        pdf.cell(45, 10, text=col, border=1)
+    # --- 第一頁：總表顯現 ---
+    pdf.add_page()
+    pdf.set_font('helvetica', 'B', 12)
+    pdf.cell(0, 10, text="Market Potential Stocks Summary", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    pdf.ln(2)
+    
+    # 總表表頭
+    pdf.set_font('helvetica', 'B', 9)
+    pdf.set_fill_color(240, 240, 240)
+    headers = ['Ticker', 'Price', 'Change%', 'Industry']
+    widths = [30, 30, 30, 100]
+    for h, w in zip(headers, widths):
+        pdf.cell(w, 10, text=h, border=1, fill=True)
     pdf.ln()
 
+    # 總表內容
     pdf.set_font('helvetica', '', 9)
-    for _, row in df.head(10).iterrows(): # 限制數量確保穩定
+    for _, row in df.iterrows():
+        pdf.cell(30, 10, text=str(row['Ticker']), border=1)
+        pdf.cell(30, 10, text=str(row['Price']), border=1)
+        pdf.cell(30, 10, text=f"{row['Change']}%", border=1)
+        pdf.cell(100, 10, text=str(row['Industry'][:35]), border=1, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    
+    pdf.ln(10)
+    pdf.set_font('helvetica', 'I', 10)
+    pdf.cell(0, 10, text="* See following pages for detailed chart and AI analysis.", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+
+    # --- 後續頁面：個股圖表 + AI ---
+    # 限制分析前 10 支最強標的，確保 100% 成功
+    for i, (index, row) in enumerate(df.head(10).iterrows()):
         ticker = row['Ticker']
         img_buf, is_above_200 = generate_charts(ticker)
         
-        ai_text = get_ai_insight(row, is_above_200) if img_buf else "No Data"
-        
-        # 寫入簡要資訊
-        pdf.cell(45, 10, text=str(ticker), border=1)
-        pdf.cell(45, 10, text=str(row['Price']), border=1)
-        pdf.cell(45, 10, text=f"{row['Change']}%", border=1)
-        pdf.cell(45, 10, text=str(row['MarketCap']), border=1, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-        
         if img_buf:
+            ai_text = get_ai_insight(row, is_above_200)
+            
+            pdf.add_page()
+            pdf.set_font('helvetica', 'B', 14)
+            pdf.cell(0, 10, text=f"{ticker} - {row['Company']}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            
+            # 插入圖表
             img_path = f"tmp_{ticker}.png"
             with open(img_path, "wb") as f: f.write(img_buf.getbuffer())
-            pdf.image(img_path, w=170)
-            pdf.ln(2)
-            pdf.set_font('helvetica', '', 8)
-            pdf.multi_cell(0, 5, text=ai_text.encode('latin-1', 'ignore').decode('latin-1'))
+            pdf.image(img_path, w=185)
+            
+            # 插入分析文字
             pdf.ln(5)
+            pdf.set_font('helvetica', 'B', 11)
+            pdf.cell(0, 8, text="AI Professional Analysis:", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            pdf.set_font('helvetica', '', 10)
+            
+            # 過濾拉丁字符以外的內容以防 PDF 崩潰
+            clean_text = ai_text.replace('\u2022', '-').encode('latin-1', 'ignore').decode('latin-1')
+            pdf.multi_cell(0, 6, text=clean_text)
+            
             os.remove(img_path)
-            pdf.add_page()
+        else:
+            print(f"跳過 {ticker}，因為無法獲取數據。")
 
     pdf.output("report.pdf")
-    print("✅ 報告已儲存。")
+    print("✅ 任務圓滿完成！請下載 report.pdf 查看總表與分析。")
 
+# ==========================================
+# 6. 執行
+# ==========================================
 if __name__ == "__main__":
-    print(">>> [主程式] 啟動成功。")
-    stocks_df = fetch_and_filter_stocks()
-    if not stocks_df.empty:
-        create_report(stocks_df)
+    df_stocks = fetch_and_filter_stocks()
+    if not df_stocks.empty:
+        create_report(df_stocks)
     else:
-        print("今日無標的。")
+        print("今日市場未發現符合篩選條件的股票。")
