@@ -1,13 +1,18 @@
-name: Stock Analysis Auto Run
+name: Auto Deploy Stock Report
 
 on:
   push:
     branches:
-      - main  # 只要您 push 到 main 分支，就會觸發
-  workflow_dispatch: # 保留手動執行的按鈕
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
 
 jobs:
-  build:
+  build-and-deploy:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -22,13 +27,16 @@ jobs:
         run: |
           pip install pandas yfinance requests beautifulsoup4 plotly kaleido google-genai
 
-      - name: Run Analysis Script
+      - name: Run Analysis
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python app_cron.py
 
-      - name: Upload Report
-        uses: actions/upload-artifact@v4
+      - name: Upload Pages Artifact
+        uses: actions/upload-pages-artifact@v3
         with:
-          name: stock-report-v1.1.0
-          path: report.html
+          path: '.'  # 上傳當前目錄（包含 report.html）
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
