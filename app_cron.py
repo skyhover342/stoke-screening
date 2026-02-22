@@ -1,5 +1,5 @@
-# 版本號碼：v1.2.8
-print(">>> [系統啟動] 正在執行 v1.2.8：全功能修正版 (視覺強化、指標對齊、歷史存檔)...")
+# 版本號碼：v1.2.9
+print(">>> [系統啟動] 正在執行 v1.2.9：大幅拉長 MACD 柱狀圖視覺佔比...")
 
 import os, time, datetime, io, base64, requests, glob
 import pandas as pd
@@ -17,13 +17,13 @@ except ImportError:
 # ==========================================
 # 1. 核心參數
 # ==========================================
-VERSION = "v1.2.8"
+VERSION = "v1.2.9"
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 TARGET_MODEL = "models/gemini-2.5-flash"
 TEST_MODE = True  # 正式執行請改 False 以呼叫真實 AI
 
 # ==========================================
-# 2. 環境與數據檢查
+# 2. 環境與數據檢查 (維持 v1.2.8 穩定邏輯)
 # ==========================================
 def is_market_open_today():
     if TEST_MODE: return True
@@ -64,10 +64,10 @@ def fetch_and_filter_stocks():
         return pd.DataFrame()
 
 # ==========================================
-# 3. 專業繪圖 (視覺比例大幅調整)
+# 3. 專業繪圖 (MACD 區塊高度精準拉伸)
 # ==========================================
 def generate_stock_images(ticker):
-    print(f">>> [分析] 繪製 {ticker} 視覺強化圖表...")
+    print(f">>> [分析] 繪製 {ticker} 技術圖表 (MACD 強化版)...")
     try:
         df_all = yf.download(ticker, period="2y", interval="1d", progress=False)
         if isinstance(df_all.columns, pd.MultiIndex): df_all.columns = df_all.columns.get_level_values(0)
@@ -85,19 +85,21 @@ def generate_stock_images(ticker):
         df_all['RSI'] = 100 - (100 / (1 + gain/loss))
         df_1y = df_all.tail(252)
 
-        # 比例調整：Row 2 (MACD) 佔比增加到 0.28 
-        fig1 = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.04, 
-                            row_heights=[0.52, 0.28, 0.2], 
+        # --- 調整 row_heights：Row 2 (MACD) 從 0.28 拉升至 0.35 ---
+        fig1 = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.035, 
+                            row_heights=[0.45, 0.35, 0.2], 
                             specs=[[{"secondary_y": True}], [{"secondary_y": False}], [{"secondary_y": False}]])
         
-        # Row 1: K線與強化的成交量
+        # Row 1: K線、三均線、成交量 (維持 v1.2.8 的 1.8倍視覺拉伸)
         fig1.add_trace(go.Bar(x=df_1y.index, y=df_1y['Volume'], marker_color='rgba(210, 210, 210, 0.8)', name="Volume", showlegend=False), row=1, col=1, secondary_y=True)
         fig1.add_trace(go.Candlestick(x=df_1y.index, open=df_1y['Open'], high=df_1y['High'], low=df_1y['Low'], close=df_1y['Close'], name="Price"), row=1, col=1, secondary_y=False)
         fig1.add_trace(go.Scatter(x=df_1y.index, y=df_1y['SMA20'], line=dict(color='cyan', width=1.2), name="SMA20"), row=1, col=1)
         fig1.add_trace(go.Scatter(x=df_1y.index, y=df_1y['SMA50'], line=dict(color='orange', width=1.5), name="SMA50"), row=1, col=1)
         fig1.add_trace(go.Scatter(x=df_1y.index, y=df_1y['SMA200'], line=dict(color='yellow', width=2.2), name="SMA200"), row=1, col=1)
-        
+        fig1.update_yaxes(range=[0, df_1y['Volume'].max()*1.8], secondary_y=True, showgrid=False, row=1)
+
         # Row 2: MACD (精準對齊 + 綠紫配色)
+        # 關鍵：這裡現在擁有 35% 的高度空間
         fig1.add_trace(go.Bar(x=df_1y.index, y=df_1y['Hist'], marker_color=['rgba(0,255,0,0.8)' if v>=0 else 'rgba(255,0,0,0.8)' for v in df_1y['Hist']], name="Histogram"), row=2, col=1)
         fig1.add_trace(go.Scatter(x=df_1y.index, y=df_1y['MACD'], line=dict(color='#00FF00', width=1.8), name="MACD"), row=2, col=1)
         fig1.add_trace(go.Scatter(x=df_1y.index, y=df_1y['Signal'], line=dict(color='#A020F0', width=1.8), name="Signal"), row=2, col=1)
@@ -107,11 +109,10 @@ def generate_stock_images(ticker):
         fig1.add_shape(type="line", x0=df_1y.index[0], y0=70, x1=df_1y.index[-1], y1=70, line=dict(color="red", dash="dash", width=1), row=3, col=1)
         fig1.add_shape(type="line", x0=df_1y.index[0], y0=30, x1=df_1y.index[-1], y1=30, line=dict(color="red", dash="dash", width=1), row=3, col=1)
 
-        # 視覺關鍵：縮小成交量 Y 軸範圍使其「長高」
-        fig1.update_yaxes(range=[0, df_1y['Volume'].max()*1.8], secondary_y=True, showgrid=False, row=1)
-        fig1.update_layout(height=750, width=1050, template="plotly_dark", xaxis_rangeslider_visible=False, barmode='overlay', margin=dict(l=10, r=10, t=30, b=10))
+        # --- 總高度從 750px 提升至 850px ---
+        fig1.update_layout(height=850, width=1050, template="plotly_dark", xaxis_rangeslider_visible=False, barmode='overlay', margin=dict(l=10, r=10, t=30, b=10))
 
-        # 1分鐘圖：爆量雷達標籤
+        # 1分鐘圖 (爆量雷達標籤)
         df_1m = yf.download(ticker, period="1d", interval="1m", progress=False)
         fig2_b64 = ""
         if not df_1m.empty:
@@ -125,6 +126,7 @@ def generate_stock_images(ticker):
                 t_color = "lime" if row['Close'] > row['Open'] else "red"
                 symbol = "▲ BUY" if row['Close'] > row['Open'] else "▼ SELL"
                 fig2.add_annotation(x=idx, y=row['High'], text=symbol, showarrow=True, arrowhead=1, arrowcolor=t_color, font=dict(size=11, color=t_color, weight='bold'), bgcolor="black", opacity=0.9, yshift=10)
+            fig2.update_yaxes(range=[0, df_1m['Volume'].max()*1.8], secondary_y=True, showgrid=False)
             fig2.update_layout(height=450, width=1050, template="plotly_dark", xaxis_rangeslider_visible=False, barmode='overlay', margin=dict(l=10, r=10, t=30, b=10))
             fig2_b64 = base64.b64encode(fig2.to_image(format="png")).decode('utf-8')
 
@@ -134,7 +136,7 @@ def generate_stock_images(ticker):
         print(f"⚠️ {ticker} 繪圖異常: {e}"); return None, None, False
 
 # ==========================================
-# 4. AI 分析函式 (補回被省略的部分)
+# 4. AI 分析函式
 # ==========================================
 def get_ai_insight(row, is_above_200):
     status = "站上" if is_above_200 else "低於"
@@ -149,7 +151,7 @@ def get_ai_insight(row, is_above_200):
     except Exception as e: return f"⚠️ AI 失敗: {e}"
 
 # ==========================================
-# 5. HTML 生成 (補回被省略的部分)
+# 5. HTML 生成 (行動端網格適配)
 # ==========================================
 def create_html_report(df):
     today_str = datetime.date.today().strftime("%Y%m%d")
@@ -208,7 +210,7 @@ def create_html_report(df):
     full_html = html_header + "</tbody></table></div>" + cards + "</div></body></html>"
     with open(f"history/report_{today_str}.html", "w", encoding="utf-8") as f: f.write(full_html)
     with open("index.html", "w", encoding="utf-8") as f: f.write(full_html)
-    print(f"✅ 歷史報告與 index.html 同步更新完成 ({VERSION})")
+    print(f"✅ v1.2.9 報告產出成功 (MACD 已拉伸)。")
 
 # ==========================================
 # 6. 主程式啟動
