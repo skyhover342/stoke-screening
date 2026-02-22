@@ -1,5 +1,5 @@
-# 版本號碼：v1.3.7
-print(">>> [系統啟動] 正在執行 v1.3.7：標註收盤點位與 Top 10 爆量指標篩選...")
+# 版本號碼：v1.3.8
+print(">>> [系統啟動] 正在執行 v1.3.8：美東時區校準與收盤位精準標註...")
 
 import os, time, datetime, io, base64, requests, glob, json
 import pandas as pd
@@ -17,7 +17,7 @@ except ImportError:
 # ==========================================
 # 1. 核心參數
 # ==========================================
-VERSION = "v1.3.7"
+VERSION = "v1.3.8"
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 TARGET_MODEL = "models/gemini-2.5-flash"
 TEST_MODE = True  # 正式執行請改 False
@@ -32,12 +32,14 @@ def is_market_open_today():
         hist = spy.history(period="1d")
         if hist.empty: return False
         last_trade_date = hist.index[-1].date()
+        # 取得美東時間
         ny_tz = pytz.timezone('America/New_York')
         today_ny = datetime.datetime.now(ny_tz).date()
         return last_trade_date == today_ny
     except: return True
 
 def fetch_and_filter_stocks():
+    print(f">>> [步驟 1] 抓取異動數據...")
     url = "https://finviz.com/screener.ashx?v=111&f=ind_stocksonly,sh_curvol_o500,sh_price_o1,sh_relvol_o5,ta_change_u"
     headers = {'User-Agent': 'Mozilla/5.0'}
     try:
@@ -50,14 +52,10 @@ def fetch_and_filter_stocks():
             if len(tds) < 11: continue
             try:
                 data.append({
-                    "Ticker": tds[1].text.strip(),
-                    "Company": tds[2].text.strip(),
-                    "Industry": tds[4].text.strip(),
-                    "MarketCap": tds[6].text.strip(),
-                    "PE": tds[7].text.strip(),
-                    "Price": float(tds[8].text.strip()), 
-                    "Change": float(tds[9].text.strip('%')),
-                    "Volume": tds[10].text.strip()
+                    "Ticker": tds[1].text.strip(), "Company": tds[2].text.strip(),
+                    "Industry": tds[4].text.strip(), "MarketCap": tds[6].text.strip(),
+                    "PE": tds[7].text.strip(), "Price": float(tds[8].text.strip()), 
+                    "Change": float(tds[9].text.strip('%')), "Volume": tds[10].text.strip()
                 })
             except: continue
         df = pd.DataFrame(data)
@@ -65,11 +63,11 @@ def fetch_and_filter_stocks():
     except: return pd.DataFrame()
 
 # ==========================================
-# 3. 專業繪圖 (收盤標註與 Top 10 爆量)
+# 3. 專業繪圖 (時區轉換與精準標記)
 # ==========================================
 def generate_stock_images(ticker):
     try:
-        # 日線數據
+        # --- 日線圖數據 ---
         df_all = yf.download(ticker, period="2y", interval="1d", progress=False)
         if df_all.empty: return None, None, False
         if isinstance(df_all.columns, pd.MultiIndex): df_all.columns = df_all.columns.get_level_values(0)
@@ -78,21 +76,17 @@ def generate_stock_images(ticker):
         df_all['SMA20'] = df_all['Close'].rolling(window=20, min_periods=1).mean()
         df_all['SMA50'] = df_all['Close'].rolling(window=50, min_periods=1).mean()
         df_all['SMA200'] = df_all['Close'].rolling(window=200, min_periods=1).mean()
-        
         exp1 = df_all['Close'].ewm(span=12, adjust=False).mean()
         exp2 = df_all['Close'].ewm(span=26, adjust=False).mean()
         df_all['MACD'] = exp1 - exp2
         df_all['Signal'] = df_all['MACD'].ewm(span=9, adjust=False).mean()
         df_all['Hist'] = df_all['MACD'] - df_all['Signal']
-        
-        delta = df_all['Close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14, min_periods=1).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14, min_periods=1).mean()
+        delta = df_all['Close'].diff(); gain = delta.where(delta > 0, 0).rolling(window=14, min_periods=1).mean(); loss = -delta.where(delta < 0, 0).rolling(window=14, min_periods=1).mean()
         df_all['RSI'] = 100 - (100 / (1 + gain/loss))
         df_1y = df_all.tail(252)
 
         fig1 = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.55, 0.25, 0.2], specs=[[{"secondary_y": True}], [{"secondary_y": False}], [{"secondary_y": False}]])
-        fig1.add_trace(go.Bar(x=df_1y.index, y=df_1y['Volume'], marker_color='rgba(210, 210, 210, 0.8)', name="Vol", showlegend=False), row=1, col=1, secondary_y=True)
+        fig1.add_trace(go.Bar(x=df_1y.index, y=df_1y['Volume'], marker_color='rgba(210, 210, 210, 0.8)', showlegend=False), row=1, col=1, secondary_y=True)
         fig1.add_trace(go.Candlestick(x=df_1y.index, open=df_1y['Open'], high=df_1y['High'], low=df_1y['Low'], close=df_1y['Close'], name="K"), row=1, col=1, secondary_y=False)
         fig1.add_trace(go.Scatter(x=df_1y.index, y=df_1y['SMA20'], line=dict(color='cyan', width=1.2), name="MA20"), row=1, col=1)
         fig1.add_trace(go.Scatter(x=df_1y.index, y=df_1y['SMA50'], line=dict(color='orange', width=1.5), name="MA50"), row=1, col=1)
@@ -104,25 +98,31 @@ def generate_stock_images(ticker):
         fig1.update_yaxes(range=[0, df_1y['Volume'].max()*1.8], secondary_y=True, showgrid=False, row=1)
         fig1.update_layout(height=800, width=1050, template="plotly_dark", xaxis_rangeslider_visible=False, barmode='overlay', margin=dict(l=10, r=10, t=30, b=10))
 
-        # 1分鐘圖 (整合盤後 + 收盤點標記 + Top 10 爆量)
+        # --- 1分鐘圖：時區校準與精準收盤 ---
         df_1m = yf.download(ticker, period="1d", interval="1m", progress=False, prepost=True)
         fig2_b64 = ""
         if not df_1m.empty:
             if isinstance(df_1m.columns, pd.MultiIndex): df_1m.columns = df_1m.columns.get_level_values(0)
+            
+            # 重要：將時區轉換為美東時間
+            df_1m.index = df_1m.index.tz_convert('America/New_York')
+            
             df_1m['Vol_Avg'] = df_1m['Volume'].rolling(window=5, min_periods=1).mean()
             fig2 = make_subplots(specs=[[{"secondary_y": True}]])
             fig2.add_trace(go.Bar(x=df_1m.index, y=df_1m['Volume'], marker_color='rgba(210, 210, 210, 0.8)'), secondary_y=True)
             fig2.add_trace(go.Candlestick(x=df_1m.index, open=df_1m['Open'], high=df_1m['High'], low=df_1m['Low'], close=df_1m['Close']), secondary_y=False)
             
-            # --- 1. 標註收盤點位 (美東 16:00) ---
-            market_close_data = df_1m[df_1m.index.time == datetime.time(16, 0)]
-            if not market_close_data.empty:
-                close_time = market_close_data.index[0]
-                close_price = market_close_data['Close'].iloc[0]
-                fig2.add_annotation(x=close_time, y=close_price, text="🔔 CLOSE", showarrow=True, arrowhead=2, font=dict(color="white", size=10), bgcolor="#003366", yshift=20)
-                fig2.add_shape(type="line", x0=df_1m.index[0], y0=close_price, x1=df_1m.index[-1], y1=close_price, line=dict(color="red", width=1, dash="dot"))
+            # --- 精準收盤偵測：抓取美東 16:00 最接近的點 ---
+            # 尋找所有 16:00 以前的數據，取最後一個作為正規交易收盤點
+            reg_session = df_1m[df_1m.index.time <= datetime.time(16, 0)]
+            if not reg_session.empty:
+                close_point = reg_session.iloc[-1]
+                close_time = reg_session.index[-1]
+                close_price = close_point['Close']
+                fig2.add_annotation(x=close_time, y=close_price, text="🔔 CLOSE (EST)", showarrow=True, arrowhead=2, font=dict(color="white", size=10), bgcolor="#003366", yshift=25)
+                fig2.add_shape(type="line", x0=df_1m.index[0], y0=close_price, x1=df_1m.index[-1], y1=close_price, line=dict(color="red", width=1.5, dash="dot"))
 
-            # --- 2. 標註前 10 大爆量指標 ---
+            # --- Top 10 爆量篩選 ---
             potential_spikes = df_1m[df_1m['Volume'] > df_1m['Vol_Avg']*3].copy()
             top_10_spikes = potential_spikes.sort_values(by='Volume', ascending=False).head(10)
             for idx, row in top_10_spikes.iterrows():
@@ -131,15 +131,16 @@ def generate_stock_images(ticker):
                 fig2.add_annotation(x=idx, y=row['High'], text=symbol, showarrow=True, arrowhead=1, arrowcolor=t_color, font=dict(size=11, color=t_color, weight='bold'), bgcolor="black", opacity=0.9, yshift=10)
 
             fig2.update_yaxes(range=[0, df_1m['Volume'].max()*1.8], secondary_y=True, showgrid=False)
+            fig2.update_xaxes(tickformat="%H:%M", nticks=10) # 優化時間顯示
             fig2.update_layout(height=450, width=1050, template="plotly_dark", xaxis_rangeslider_visible=False, barmode='overlay', margin=dict(l=10, r=10, t=30, b=10))
             fig2_b64 = base64.b64encode(fig2.to_image(format="png")).decode('utf-8')
 
-        return base64.b64encode(fig1.to_image(format="png")).decode('utf-8'), fig2_b64, bool(df_1y['Close'].iloc[-1] > df_1y['SMA200'].iloc[-1])
+        img1_b64 = base64.b64encode(fig1.to_image(format="png")).decode('utf-8')
+        return img1_b64, fig2_b64, bool(df_1y['Close'].iloc[-1] > df_1y['SMA200'].iloc[-1])
     except Exception as e:
         print(f"⚠️ {ticker} 繪圖異常: {e}"); return None, None, False
 
-# 批量 AI、HTML 生成邏輯維持 v1.3.6 穩定性
-# ... (為遵守穩定性準則，以下內容完整提供) ...
+# 批量 AI 分析與 HTML 生成邏輯 (補全確保不報錯)
 def get_batch_ai_insights(df_subset):
     tickers = df_subset['Ticker'].tolist()
     if TEST_MODE: return {t: f"<p style='color:#666;'>[測試] 批量分析結果 - {t}</p>" for t in tickers}
