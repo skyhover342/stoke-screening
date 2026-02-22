@@ -139,46 +139,55 @@ def generate_charts(ticker):
 # ==========================================
 # 4. Gemini 3.1 Thinking AI 分析 (強化資訊輸入)
 # ==========================================
-def get_ai_insight(row, is_above_200):
+def get_ai_insight(row, is_above_200, use_pro=False):
     if not GEMINI_KEY: return "未偵測到 API Key。"
     
-    # 這裡確保傳入 prompt 的字串是乾淨的
-    # bool() 轉換是為了解決 ValueError: The truth value of a Series is ambiguous
+    # 確保 is_above_200 是布林值
     status_200ma = "站上" if bool(is_above_200) else "低於"
-    
     client = genai.Client(api_key=GEMINI_KEY)
     
-    # 回歸你要求的 Gemini 3.1 Pro Preview
-    model_id = "gemini-3.1-pro-preview" 
+    # 根據你的清單設定精確的模型 ID
+    # 前幾名用 3.1 Pro，其餘用 3 Flash
+    model_id = "models/gemini-3.1-pro-preview" if use_pro else "models/gemini-3-flash-preview"
     
-    prompt = f"""
-    分析美股 {row['Ticker']} ({row['Company']})：
+    prompt = f"""分析美股 {row['Ticker']} ({row['Company']})：
     - 產業: {row['Industry']} (國家: {row['Country']})
     - 財務面: 市值 {row['MarketCap']}, P/E Ratio: {row['PE']}
     - 價格: {row['Price']} (今日漲幅 {row['Change']}%)
     - 技術面: {status_200ma} 200MA。
-    
-    請身為專業研究員進行思考並給出：
-    1. 贏面分數(0-100) 
-    2. 具體買進/賣出結論 
-    3. 詳細的操作建議與風險提示。
-    """
-    
-    try:
-        # 依照 Gemini 3.1 的 Thinking Config 設定
-        response = client.models.generate_content(
-            model=model_id,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                thinking_config=types.ThinkingConfig(thinking_level="HIGH")
+    請深度思考並給出：1. 贏面分數(0-100) 2. 具體買進/賣出結論 3. 操作建議。"""
+
+    retries = 2
+    while retries >= 0:
+        try:
+            # 只有 Pro 模型才加上 thinking_config，因為 Flash 可能不支援高強度思考模式
+            config = None
+            if "pro" in model_id:
+                config = types.GenerateContentConfig(
+                    thinking_config=types.ThinkingConfig(thinking_level="HIGH")
+                )
+            
+            response = client.models.generate_content(
+                model=model_id,
+                contents=prompt,
+                config=config
             )
-        )
-        # Gemini 3.1 Thinking 比較耗時，保持足夠的 sleep 避免 Rate Limit
-        time.sleep(30) 
-        return response.text
-    except Exception as e:
-        print(f"❌ Gemini 3.1 呼叫失敗: {e}")
-        return f"AI 分析失敗，錯誤代碼: {e}"
+            
+            # 成功後依據模型等級實施冷卻
+            # Pro 需要更長的冷卻時間來躲避 429
+            wait_time = 45 if use_pro else 10
+            print(f"✅ {row['Ticker']} 分析完成 ({model_id})，冷卻 {wait_time} 秒...")
+            time.sleep(wait_time)
+            return response.text
+
+        except Exception as e:
+            if "429" in str(e) and retries > 0:
+                print(f"⚠️ 觸發配額限制，正在重試並等待... (剩餘次數: {retries})")
+                time.sleep(60) # 遇到 429 強制停一分鐘
+                retries -= 1
+            else:
+                print(f"❌ {model_id} 請求失敗: {e}")
+                return f"分析失敗: {e}"
 
 # ==========================================
 # 5. PDF 專業報告生成 (更新表格欄位)
@@ -193,13 +202,13 @@ def create_report(df):
     pdf = PDFReport()
     pdf.set_auto_page_break(auto=True, margin=15)
     
-    # 首頁摘要
+    # 1. 製作首頁摘要表格
     pdf.add_page()
     pdf.set_font('helvetica', 'B', 12)
-    pdf.cell(0, 10, text="Market Scan Summary (Top Potential Movers):", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 10, text="Market Scan Summary:", new_x="LMARGIN", new_y="NEXT")
     pdf.ln(5)
     
-    # 表格標頭 (對應你需要的欄位)
+    # 表格標頭 (對應你要求的欄位)
     pdf.set_font('helvetica', 'B', 8)
     col_widths = [20, 45, 30, 25, 25, 20, 25]
     headers = ['Ticker', 'Industry', 'Country', 'Mkt Cap', 'P/E', 'Price', 'Change%']
@@ -207,7 +216,7 @@ def create_report(df):
         pdf.cell(col_widths[i], 10, text=col, border=1, align='C')
     pdf.ln()
 
-    # 表格內容
+    # 填入資料列
     pdf.set_font('helvetica', '', 8)
     for _, row in df.iterrows():
         pdf.cell(20, 10, text=str(row['Ticker']), border=1)
@@ -218,33 +227,46 @@ def create_report(df):
         pdf.cell(20, 10, text=str(row['Price']), border=1)
         pdf.cell(25, 10, text=f"{row['Change']}%", border=1, new_x="LMARGIN", new_y="NEXT")
 
-    # 每股詳情頁
-    for _, row in df.head(10).iterrows():
+    # 2. 逐一生成個股詳細頁面 (重點：在這裡進行 Pro/Flash 分流)
+    # 我們限制最多分析 15 支，避免 GitHub Action 執行過久
+    for i, (index, row) in enumerate(df.head(15).iterrows()):
         ticker = row['Ticker']
         img_buf, is_above_200 = generate_charts(ticker)
-        if img_buf is None: continue
         
-        ai_text = get_ai_insight(row, is_above_200)
+        if img_buf is None:
+            continue
+            
+        # --- 智能分流判斷 ---
+        # 前 3 支用 3.1 Pro 深度思考，剩下的用 3 Flash 快速分析
+        use_pro = True if i < 3 else False
+        ai_text = get_ai_insight(row, is_above_200, use_pro=use_pro)
         
+        # 新增一個 PDF 頁面
         pdf.add_page()
         pdf.set_font('helvetica', 'B', 14)
         pdf.cell(0, 10, text=f"Detailed Analysis: {ticker} - {row['Company']}", new_x="LMARGIN", new_y="NEXT")
         
+        # 插入圖片
         img_path = f"temp_{ticker}.png"
         with open(img_path, "wb") as f: f.write(img_buf.getbuffer())
         pdf.image(img_path, x=10, y=30, w=190)
         
+        # 插入 AI 分析文字
         pdf.set_y(150)
         pdf.set_font('helvetica', 'B', 12)
         pdf.cell(0, 10, text="AI Strategist Thinking Insight:", new_x="LMARGIN", new_y="NEXT")
         pdf.set_font('helvetica', '', 10)
-        # 清除不支援字符
+        
+        # 處理特殊字元並寫入
         clean_text = ai_text.replace('\u2022', '-').encode('latin-1', 'ignore').decode('latin-1')
         pdf.multi_cell(0, 6, text=clean_text)
+        
+        # 刪除暫存圖檔
         os.remove(img_path)
 
+    # 3. 儲存 PDF
     pdf.output("report.pdf")
-    print("✅ 報告生成成功：report.pdf")
+    print("✅ 最終報告已生成：report.pdf")
 
 # ==========================================
 # 6. 主執行流程
