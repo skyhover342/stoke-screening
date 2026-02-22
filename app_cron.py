@@ -1,5 +1,5 @@
-# 版本號碼：v1.2.9
-print(">>> [系統啟動] 正在執行 v1.2.9：大幅拉長 MACD 柱狀圖視覺佔比...")
+# 版本號碼：v1.3.0
+print(">>> [系統啟動] 正在執行 v1.3.0：全面移除 Sector，優化介面簡潔度...")
 
 import os, time, datetime, io, base64, requests, glob
 import pandas as pd
@@ -17,13 +17,13 @@ except ImportError:
 # ==========================================
 # 1. 核心參數
 # ==========================================
-VERSION = "v1.2.9"
+VERSION = "v1.3.0"
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 TARGET_MODEL = "models/gemini-2.5-flash"
-TEST_MODE = True  # 正式執行請改 False 以呼叫真實 AI
+TEST_MODE = True  # 正式執行請改 False
 
 # ==========================================
-# 2. 環境與數據檢查 (維持 v1.2.8 穩定邏輯)
+# 2. 環境與數據檢查
 # ==========================================
 def is_market_open_today():
     if TEST_MODE: return True
@@ -38,9 +38,9 @@ def is_market_open_today():
     except: return True
 
 def fetch_and_filter_stocks():
-    print(f">>> [步驟 1] 正在從 Finviz 抓取美股異動清單...")
+    print(f">>> [步驟 1] 正在抓取 Finviz 數據 (已移除 Sector)...")
     url = "https://finviz.com/screener.ashx?v=111&f=ind_stocksonly,sh_curvol_o500,sh_price_o1,sh_relvol_o5,ta_change_u"
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+    headers = {'User-Agent': 'Mozilla/5.0'}
     try:
         resp = requests.get(url, headers=headers, timeout=20)
         soup = BeautifulSoup(resp.text, 'html.parser')
@@ -50,24 +50,26 @@ def fetch_and_filter_stocks():
             tds = r.find_all('td')
             if len(tds) < 11: continue
             try:
+                # 移除 tds[3] (Sector)，保留其他資訊
                 data.append({
-                    "Ticker": tds[1].text.strip(), "Company": tds[2].text.strip(),
-                    "Sector": tds[3].text.strip(), "Industry": tds[4].text.strip(),
-                    "MarketCap": tds[6].text.strip(), "PE": tds[7].text.strip(),
-                    "Price": float(tds[8].text.strip()), "Change": float(tds[9].text.strip('%')),
+                    "Ticker": tds[1].text.strip(),
+                    "Company": tds[2].text.strip(),
+                    "Industry": tds[4].text.strip(),
+                    "MarketCap": tds[6].text.strip(),
+                    "PE": tds[7].text.strip(),
+                    "Price": float(tds[8].text.strip()), 
+                    "Change": float(tds[9].text.strip('%')),
                     "Volume": tds[10].text.strip()
                 })
             except: continue
         df = pd.DataFrame(data)
         return df.head(2) if TEST_MODE else df.head(10)
-    except:
-        return pd.DataFrame()
+    except: return pd.DataFrame()
 
 # ==========================================
-# 3. 專業繪圖 (MACD 區塊高度精準拉伸)
+# 3. 專業繪圖 (MACD 35% 高度拉伸版)
 # ==========================================
 def generate_stock_images(ticker):
-    print(f">>> [分析] 繪製 {ticker} 技術圖表 (MACD 強化版)...")
     try:
         df_all = yf.download(ticker, period="2y", interval="1d", progress=False)
         if isinstance(df_all.columns, pd.MultiIndex): df_all.columns = df_all.columns.get_level_values(0)
@@ -85,12 +87,11 @@ def generate_stock_images(ticker):
         df_all['RSI'] = 100 - (100 / (1 + gain/loss))
         df_1y = df_all.tail(252)
 
-        # --- 調整 row_heights：Row 2 (MACD) 從 0.28 拉升至 0.35 ---
         fig1 = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.035, 
                             row_heights=[0.45, 0.35, 0.2], 
                             specs=[[{"secondary_y": True}], [{"secondary_y": False}], [{"secondary_y": False}]])
         
-        # Row 1: K線、三均線、成交量 (維持 v1.2.8 的 1.8倍視覺拉伸)
+        # Row 1: K線、三均線、成交量 (1.8倍強化)
         fig1.add_trace(go.Bar(x=df_1y.index, y=df_1y['Volume'], marker_color='rgba(210, 210, 210, 0.8)', name="Volume", showlegend=False), row=1, col=1, secondary_y=True)
         fig1.add_trace(go.Candlestick(x=df_1y.index, open=df_1y['Open'], high=df_1y['High'], low=df_1y['Low'], close=df_1y['Close'], name="Price"), row=1, col=1, secondary_y=False)
         fig1.add_trace(go.Scatter(x=df_1y.index, y=df_1y['SMA20'], line=dict(color='cyan', width=1.2), name="SMA20"), row=1, col=1)
@@ -98,21 +99,17 @@ def generate_stock_images(ticker):
         fig1.add_trace(go.Scatter(x=df_1y.index, y=df_1y['SMA200'], line=dict(color='yellow', width=2.2), name="SMA200"), row=1, col=1)
         fig1.update_yaxes(range=[0, df_1y['Volume'].max()*1.8], secondary_y=True, showgrid=False, row=1)
 
-        # Row 2: MACD (精準對齊 + 綠紫配色)
-        # 關鍵：這裡現在擁有 35% 的高度空間
+        # Row 2: MACD (拉長版 + 綠紫配色) 
         fig1.add_trace(go.Bar(x=df_1y.index, y=df_1y['Hist'], marker_color=['rgba(0,255,0,0.8)' if v>=0 else 'rgba(255,0,0,0.8)' for v in df_1y['Hist']], name="Histogram"), row=2, col=1)
         fig1.add_trace(go.Scatter(x=df_1y.index, y=df_1y['MACD'], line=dict(color='#00FF00', width=1.8), name="MACD"), row=2, col=1)
         fig1.add_trace(go.Scatter(x=df_1y.index, y=df_1y['Signal'], line=dict(color='#A020F0', width=1.8), name="Signal"), row=2, col=1)
         
         # Row 3: RSI (亮紫色)
         fig1.add_trace(go.Scatter(x=df_1y.index, y=df_1y['RSI'], line=dict(color='#E0B0FF', width=2.2), name="RSI14"), row=3, col=1)
-        fig1.add_shape(type="line", x0=df_1y.index[0], y0=70, x1=df_1y.index[-1], y1=70, line=dict(color="red", dash="dash", width=1), row=3, col=1)
-        fig1.add_shape(type="line", x0=df_1y.index[0], y0=30, x1=df_1y.index[-1], y1=30, line=dict(color="red", dash="dash", width=1), row=3, col=1)
-
-        # --- 總高度從 750px 提升至 850px ---
+        
         fig1.update_layout(height=850, width=1050, template="plotly_dark", xaxis_rangeslider_visible=False, barmode='overlay', margin=dict(l=10, r=10, t=30, b=10))
 
-        # 1分鐘圖 (爆量雷達標籤)
+        # 1分鐘圖
         df_1m = yf.download(ticker, period="1d", interval="1m", progress=False)
         fig2_b64 = ""
         if not df_1m.empty:
@@ -124,34 +121,31 @@ def generate_stock_images(ticker):
             spikes = df_1m[df_1m['Volume'] > df_1m['Vol_Avg']*3]
             for idx, row in spikes.iterrows():
                 t_color = "lime" if row['Close'] > row['Open'] else "red"
-                symbol = "▲ BUY" if row['Close'] > row['Open'] else "▼ SELL"
-                fig2.add_annotation(x=idx, y=row['High'], text=symbol, showarrow=True, arrowhead=1, arrowcolor=t_color, font=dict(size=11, color=t_color, weight='bold'), bgcolor="black", opacity=0.9, yshift=10)
+                fig2.add_annotation(x=idx, y=row['High'], text="▲ BUY" if row['Close'] > row['Open'] else "▼ SELL", showarrow=True, arrowhead=1, arrowcolor=t_color, font=dict(size=11, color=t_color, weight='bold'), bgcolor="black", opacity=0.9, yshift=10)
             fig2.update_yaxes(range=[0, df_1m['Volume'].max()*1.8], secondary_y=True, showgrid=False)
             fig2.update_layout(height=450, width=1050, template="plotly_dark", xaxis_rangeslider_visible=False, barmode='overlay', margin=dict(l=10, r=10, t=30, b=10))
             fig2_b64 = base64.b64encode(fig2.to_image(format="png")).decode('utf-8')
 
-        img1_b64 = base64.b64encode(fig1.to_image(format="png")).decode('utf-8')
-        return img1_b64, fig2_b64, bool(df_1y['Close'].iloc[-1] > df_1y['SMA200'].iloc[-1])
-    except Exception as e:
-        print(f"⚠️ {ticker} 繪圖異常: {e}"); return None, None, False
+        return base64.b64encode(fig1.to_image(format="png")).decode('utf-8'), fig2_b64, bool(df_1y['Close'].iloc[-1] > df_1y['SMA200'].iloc[-1])
+    except: return None, None, False
 
 # ==========================================
 # 4. AI 分析函式
 # ==========================================
 def get_ai_insight(row, is_above_200):
     status = "站上" if is_above_200 else "低於"
-    prompt = f"分析美股 {row['Ticker']}。目前價格 {row['Price']}, 今日漲幅 {row['Change']}%, 目前{status} SMA200。請以繁體中文提供 MACD 與 RSI14 走勢分析及操作評分。150 字內。"
-    if TEST_MODE: return f"<p style='color:#666; font-size:12px;'>[AI 指令預覽]: {prompt}</p>"
-    if not GEMINI_KEY: return "❌ 缺少 GEMINI_API_KEY"
+    prompt = f"分析 {row['Ticker']}。目前價格 {row['Price']}, 今日漲幅 {row['Change']}%, 目前{status} SMA200。請提供 MACD/RSI14 分析及操作建議。150字繁體中文。"
+    if TEST_MODE: return f"<p style='color:#666; font-size:12px;'>[AI 預覽]: {prompt}</p>"
+    if not GEMINI_KEY: return "❌ 缺少 API KEY"
     try:
         client = genai.Client(api_key=GEMINI_KEY)
         response = client.models.generate_content(model=TARGET_MODEL, contents=prompt)
         time.sleep(45)
         return response.text.replace('\n', '<br>')
-    except Exception as e: return f"⚠️ AI 失敗: {e}"
+    except: return "⚠️ AI 失敗"
 
 # ==========================================
-# 5. HTML 生成 (行動端網格適配)
+# 5. HTML 生成 (簡約 8 欄位佈局)
 # ==========================================
 def create_html_report(df):
     today_str = datetime.date.today().strftime("%Y%m%d")
@@ -173,12 +167,19 @@ def create_html_report(df):
             .history-bar {{ background: white; padding: 15px; border-radius: 8px; margin-bottom: 20px; display: flex; align-items: center; overflow-x: auto; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }}
             .history-item {{ text-decoration: none; color: #666; padding: 5px 12px; border: 1px solid #ddd; border-radius: 20px; margin-right: 10px; font-size: 12px; white-space: nowrap; }}
             .summary-table-wrapper {{ overflow-x: auto; -webkit-overflow-scrolling: touch; }}
-            .summary-table {{ width: 100%; border-collapse: collapse; background: white; margin-bottom: 40px; font-size: 12px; min-width: 850px; }}
+            .summary-table {{ width: 100%; border-collapse: collapse; background: white; margin-bottom: 40px; font-size: 12px; min-width: 800px; }}
             .summary-table th {{ background: #003366; color: white; padding: 12px; }}
             .summary-table td {{ border-bottom: 1px solid #eee; text-align: center; padding: 10px; cursor: pointer; }}
             .stock-card {{ background: white; border-radius: 12px; margin-bottom: 60px; overflow: hidden; box-shadow: 0 6px 20px rgba(0,0,0,0.15); scroll-margin-top: 20px; }}
-            .card-header-row {{ background: #003366; color: white; padding: 12px; display: grid; grid-template-columns: 75px 180px 100px 140px 90px 75px 75px 75px 1fr; text-align: center; font-size: 12px; font-weight: bold; align-items: center; }}
-            @media (max-width: 768px) {{ .card-header-row {{ grid-template-columns: repeat(3, 1fr); font-size: 10px; gap: 10px; padding: 15px; }} }}
+            
+            /* 更新：8 欄位數據列佈局  */
+            .card-header-row {{ 
+                background: #003366; color: white; padding: 12px; 
+                display: grid; 
+                grid-template-columns: 80px 220px 180px 100px 80px 80px 80px 1fr;
+                text-align: center; font-size: 13px; font-weight: bold; align-items: center;
+            }}
+            @media (max-width: 768px) {{ .card-header-row {{ grid-template-columns: repeat(2, 1fr); font-size: 11px; gap: 8px; padding: 15px; }} }}
             .chart-stack {{ display: flex; flex-direction: column; gap: 20px; align-items: center; background: #1a1a1a; padding: 15px; }}
             .chart-stack img {{ width: 100%; height: auto; border: 1px solid #444; }}
             .analysis-box {{ padding: 25px; line-height: 1.8; background: #f8fafc; font-size: 14px; border-top: 1px solid #eee; }}
@@ -187,11 +188,14 @@ def create_html_report(df):
     </head>
     <body><div class="container" id="top">
         <div class="history-bar"><div style="font-weight:bold;margin-right:10px;color:#003366;white-space:nowrap;">📅 歷史存檔：</div>{history_links}</div>
-        <h1 style="color:#003366; text-align:center;">📊 美股 AI 全指標深度報告 {VERSION}</h1>
-        <div class="summary-table-wrapper"><table class="summary-table"><thead><tr><th>代碼</th><th>公司</th><th>板塊</th><th>產業</th><th>市值</th><th>P/E</th><th>價格</th><th>漲幅</th><th>成交量</th></tr></thead><tbody>
+        <h1 style="color:#003366; text-align:center;">📊 美股 AI 深度掃描報告 {VERSION}</h1>
+        <div class="summary-table-wrapper">
+            <table class="summary-table">
+                <thead><tr><th>代碼</th><th>公司</th><th>產業</th><th>市值</th><th>P/E</th><th>價格</th><th>漲幅</th><th>成交量</th></tr></thead>
+                <tbody>
     """
     for _, row in df.iterrows():
-        html_header += f"<tr onclick=\"window.location='#{row['Ticker']}';\"><td><b>{row['Ticker']}</b></td><td>{row['Company']}</td><td>{row['Sector']}</td><td>{row['Industry']}</td><td>{row['MarketCap']}</td><td>{row['PE']}</td><td>${row['Price']}</td><td style='color:red;'>+{row['Change']}%</td><td>{row['Volume']}</td></tr>"
+        html_header += f"<tr onclick=\"window.location='#{row['Ticker']}';\"><td><b>{row['Ticker']}</b></td><td>{row['Company']}</td><td>{row['Industry']}</td><td>{row['MarketCap']}</td><td>{row['PE']}</td><td>${row['Price']}</td><td style='color:red;'>+{row['Change']}%</td><td>{row['Volume']}</td></tr>"
     
     cards = ""
     for _, row in df.iterrows():
@@ -200,8 +204,9 @@ def create_html_report(df):
             cards += f"""
             <div class="stock-card" id="{row['Ticker']}">
                 <div class="card-header-row">
-                    <div>{row['Ticker']}</div><div>{row['Company']}</div><div>{row['Sector']}</div><div>{row['Industry']}</div>
-                    <div>{row['MarketCap']}</div><div>{row['PE']}</div><div>${row['Price']}</div><div style="color:#ffcccc;">+{row['Change']}%</div><div>{row['Volume']}</div>
+                    <div>{row['Ticker']}</div><div>{row['Company']}</div><div>{row['Industry']}</div>
+                    <div>{row['MarketCap']}</div><div>{row['PE']}</div><div>${row['Price']}</div>
+                    <div style="color:#ffcccc;">+{row['Change']}%</div><div>{row['Volume']}</div>
                 </div>
                 <div class="chart-stack"><img src="data:image/png;base64,{img1}"><img src="data:image/png;base64,{img2}"></div>
                 <div class="analysis-box"><strong>🛡️ AI 策略師診斷：</strong><br>{get_ai_insight(row, is_above)}<a href="#top" class="back-btn">⬆ 返回總表</a><div style="clear:both;"></div></div>
@@ -210,15 +215,11 @@ def create_html_report(df):
     full_html = html_header + "</tbody></table></div>" + cards + "</div></body></html>"
     with open(f"history/report_{today_str}.html", "w", encoding="utf-8") as f: f.write(full_html)
     with open("index.html", "w", encoding="utf-8") as f: f.write(full_html)
-    print(f"✅ v1.2.9 報告產出成功 (MACD 已拉伸)。")
+    print(f"✅ v1.3.0 報告已更新 (已移除 Sector)。")
 
-# ==========================================
-# 6. 主程式啟動
-# ==========================================
 if __name__ == "__main__":
     if not TEST_MODE and not is_market_open_today():
-        print("🛑 市場休市中，今日不執行更新。")
+        print("🛑 今日未開盤")
     else:
         df_stocks = fetch_and_filter_stocks()
-        if not df_stocks.empty:
-            create_html_report(df_stocks)
+        if not df_stocks.empty: create_html_report(df_stocks)
