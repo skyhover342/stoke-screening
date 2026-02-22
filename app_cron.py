@@ -1,5 +1,5 @@
-# 版本號碼：v1.4.0
-print(">>> [系統啟動] 正在執行 v1.4.0：拉長收盤標記與爆量指引線，避免遮擋 K 線...")
+# 版本號碼：v1.4.2
+print(">>> [系統啟動] 正在執行 v1.4.2：優化 MAX 時段邏輯，確保新股顯示完整歷史...")
 
 import os, time, datetime, io, base64, requests, glob, json
 import pandas as pd
@@ -17,10 +17,10 @@ except ImportError:
 # ==========================================
 # 1. 核心參數
 # ==========================================
-VERSION = "v1.4.0"
+VERSION = "v1.4.2"
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 TARGET_MODEL = "models/gemini-2.5-flash"
-TEST_MODE = True  # 正式執行請改 False
+TEST_MODE = True 
 
 # ==========================================
 # 2. 環境與數據檢查
@@ -61,25 +61,33 @@ def fetch_and_filter_stocks():
     except: return pd.DataFrame()
 
 # ==========================================
-# 3. 專業繪圖 (支援 1Y/3Y 與指引線強化)
+# 3. 專業繪圖 (強化 MACD 顯色與動態時段)
 # ==========================================
 def generate_chart(df_plot, height=800):
-    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.55, 0.25, 0.2], specs=[[{"secondary_y": True}], [{"secondary_y": False}], [{"secondary_y": False}]])
+    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03, 
+                        row_heights=[0.55, 0.25, 0.2], 
+                        specs=[[{"secondary_y": True}], [{"secondary_y": False}], [{"secondary_y": False}]])
+    
     fig.add_trace(go.Bar(x=df_plot.index, y=df_plot['Volume'], marker_color='rgba(210, 210, 210, 0.8)', showlegend=False), row=1, col=1, secondary_y=True)
-    fig.add_trace(go.Candlestick(x=df_plot.index, open=df_plot['Open'], high=df_plot['High'], low=df_plot['Low'], close=df_plot['Close'], name="K"), row=1, col=1, secondary_y=False)
+    fig.add_trace(go.Candlestick(x=df_plot.index, open=df_plot['Open'], high=df_plot['High'], low=df_plot['Low'], close=df_plot['Close'], name="Price"), row=1, col=1, secondary_y=False)
     fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['SMA20'], line=dict(color='cyan', width=1.2), name="MA20"), row=1, col=1)
     fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['SMA50'], line=dict(color='orange', width=1.5), name="MA50"), row=1, col=1)
     fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['SMA200'], line=dict(color='yellow', width=2.2), name="MA200"), row=1, col=1)
-    fig.add_trace(go.Bar(x=df_plot.index, y=df_plot['Hist'], marker_color=['rgba(0,255,0,0.8)' if v>=0 else 'rgba(255,0,0,0.8)' for v in df_plot['Hist']]), row=2, col=1)
+    
+    # MACD 顯色校準 (無邊框模式)
+    colors = ['rgba(0,255,0,0.9)' if v>=0 else 'rgba(255,0,0,0.9)' for v in df_plot['Hist']]
+    fig.add_trace(go.Bar(x=df_plot.index, y=df_plot['Hist'], marker=dict(color=colors, line_width=0), name="Histogram"), row=2, col=1)
     fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['MACD'], line=dict(color='#00FF00', width=1.8)), row=2, col=1)
     fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['Signal'], line=dict(color='#A020F0', width=1.8)), row=2, col=1)
     fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['RSI'], line=dict(color='#E0B0FF', width=2.2)), row=3, col=1)
+    
     fig.update_yaxes(range=[0, df_plot['Volume'].max()*1.8], secondary_y=True, showgrid=False, row=1)
     fig.update_layout(height=height, width=1050, template="plotly_dark", xaxis_rangeslider_visible=False, barmode='overlay', margin=dict(l=10, r=10, t=30, b=10))
     return base64.b64encode(fig.to_image(format="png")).decode('utf-8')
 
 def generate_stock_images(ticker):
     try:
+        # 抓取 4 年資料以覆蓋 3 年或新股最長資料
         df_all = yf.download(ticker, period="4y", interval="1d", progress=False)
         if df_all.empty: return None, None, None, False
         if isinstance(df_all.columns, pd.MultiIndex): df_all.columns = df_all.columns.get_level_values(0)
@@ -92,10 +100,14 @@ def generate_stock_images(ticker):
         delta = df_all['Close'].diff(); gain = delta.where(delta > 0, 0).rolling(window=14, min_periods=1).mean(); loss = -delta.where(delta < 0, 0).rolling(window=14, min_periods=1).mean()
         df_all['RSI'] = 100 - (100 / (1 + gain/loss))
 
+        # 1Y 圖表
         img_1y = generate_chart(df_all.tail(252))
-        img_3y = generate_chart(df_all.tail(756))
+        
+        # MAX 圖表：如果總筆數小於 756 (3年)，就抓全部；否則抓 756 筆
+        max_len = min(len(df_all), 756)
+        img_max = generate_chart(df_all.tail(max_len))
 
-        # 1分鐘圖 (指引線強化重點)
+        # 1分鐘圖 (整合盤後)
         df_1m = yf.download(ticker, period="1d", interval="1m", progress=False, prepost=True)
         img_1m = ""
         if not df_1m.empty:
@@ -106,44 +118,36 @@ def generate_stock_images(ticker):
             fig2.add_trace(go.Bar(x=df_1m.index, y=df_1m['Volume'], marker_color='rgba(210, 210, 210, 0.8)'), secondary_y=True)
             fig2.add_trace(go.Candlestick(x=df_1m.index, open=df_1m['Open'], high=df_1m['High'], low=df_1m['Low'], close=df_1m['Close']), secondary_y=False)
             
-            # --- 收盤點：指引線拉長至 yshift=50 ---
             reg_session = df_1m[df_1m.index.time <= datetime.time(16, 0)]
             if not reg_session.empty:
                 cp = reg_session.iloc[-1]; ct = reg_session.index[-1]; cpr = cp['Close']
-                fig2.add_annotation(x=ct, y=cpr, text="🔔 CLOSE (EST)", showarrow=True, arrowhead=2, 
-                                    font=dict(color="white", size=10), bgcolor="#003366", 
-                                    ay=-50, yshift=10) # ay控制箭頭長度
+                fig2.add_annotation(x=ct, y=cpr, text="🔔 CLOSE (EST)", showarrow=True, arrowhead=2, font=dict(color="white", size=10), bgcolor="#003366", ay=-50, yshift=10)
                 fig2.add_shape(type="line", x0=df_1m.index[0], y0=cpr, x1=df_1m.index[-1], y1=cpr, line=dict(color="red", width=1.5, dash="dot"))
 
-            # --- Top 10 爆量：指引線懸浮化 (ay=-40) ---
             spikes = df_1m[df_1m['Volume'] > df_1m['Vol_Avg']*3].copy()
             for idx, row in spikes.sort_values(by='Volume', ascending=False).head(10).iterrows():
                 t_color = "lime" if row['Close'] > row['Open'] else "red"
-                symbol = "▲ BUY" if row['Close'] > row['Open'] else "▼ SELL"
-                fig2.add_annotation(x=idx, y=row['High'], text=symbol, showarrow=True, arrowhead=1, 
-                                    arrowcolor=t_color, font=dict(size=11, color=t_color, weight='bold'), 
-                                    bgcolor="black", opacity=0.9, ay=-40, yshift=5) # 標籤距離 K 線 40px
-
+                fig2.add_annotation(x=idx, y=row['High'], text="▲ BUY" if row['Close'] > row['Open'] else "▼ SELL", showarrow=True, arrowhead=1, arrowcolor=t_color, font=dict(size=11, color=t_color, weight='bold'), bgcolor="black", opacity=0.9, ay=-40, yshift=5)
             fig2.update_layout(height=450, width=1050, template="plotly_dark", xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=30, b=10))
             img_1m = base64.b64encode(fig2.to_image(format="png")).decode('utf-8')
 
-        return img_1y, img_3y, img_1m, bool(df_all['Close'].iloc[-1] > df_all['SMA200'].iloc[-1])
+        return img_1y, img_max, img_1m, bool(df_all['Close'].iloc[-1] > df_all['SMA200'].iloc[-1])
     except Exception as e:
         print(f"⚠️ {ticker} 繪圖異常: {e}"); return None, None, None, False
 
-# 批量 AI 分析邏輯 (維持穩定)
+# 批量 AI 分析邏輯
 def get_batch_ai_insights(df_subset):
     tickers = df_subset['Ticker'].tolist()
-    if TEST_MODE: return {t: f"<p style='color:#666;'>[測試] 批量分析結果 - {t}</p>" for t in tickers}
+    if TEST_MODE: return {t: f"<p style='color:#666;'>[測試] {t} 分析中...</p>" for t in tickers}
     data_summary = "".join([f"- {r['Ticker']}: ${r['Price']} ({r['Change']}%)\n" for _, r in df_subset.iterrows()])
-    prompt = f"分析美股技術趨勢，結合 MACD/RSI14 提供建議。繁體中文。回傳 JSON：{{\"Ticker\": \"內容\"}} \n數據：\n{data_summary}"
+    prompt = f"分析美股技術趨勢，結合 MACD/RSI14 提供 100 字內繁體中文建議。必須回傳 JSON：{{\"Ticker\": \"內容\"}} \n數據：\n{data_summary}"
     try:
         client = genai.Client(api_key=GEMINI_KEY); response = client.models.generate_content(model=TARGET_MODEL, contents=prompt)
         raw_text = response.text.strip().replace('```json', '').replace('```', '')
         return json.loads(raw_text)
     except: return {t: "⚠️ 無法分析" for t in tickers}
 
-# HTML 生成 (維持 1Y/3Y 切換與分享功能)
+# HTML 生成 (切換 UI 優化)
 def create_html_report(df):
     today_str = datetime.date.today().strftime("%Y%m%d")
     os.makedirs("history", exist_ok=True)
@@ -179,11 +183,11 @@ def create_html_report(df):
     <script>
         function switchPeriod(ticker, period) {{
             const img1y = document.getElementById('img-1y-' + ticker);
-            const img3y = document.getElementById('img-3y-' + ticker);
+            const imgmax = document.getElementById('img-max-' + ticker);
             const btn1y = document.getElementById('btn-1y-' + ticker);
-            const btn3y = document.getElementById('btn-3y-' + ticker);
-            if(period === '3y') {{ img1y.style.display = 'none'; img3y.style.display = 'block'; btn1y.classList.remove('active'); btn3y.classList.add('active'); }} 
-            else {{ img1y.style.display = 'block'; img3y.style.display = 'none'; btn1y.classList.add('active'); btn3y.classList.remove('active'); }}
+            const btnmax = document.getElementById('btn-max-' + ticker);
+            if(period === 'max') {{ img1y.style.display = 'none'; imgmax.style.display = 'block'; btn1y.classList.remove('active'); btnmax.classList.add('active'); }} 
+            else {{ img1y.style.display = 'block'; imgmax.style.display = 'none'; btn1y.classList.add('active'); btnmax.classList.remove('active'); }}
         }}
         async function shareTicker(t, p) {{
             const s = {{ title: `📈 AI 掃描: ${{t}}`, text: `代碼 ${{t}} 目前 $${{p}}。查看分析。`, url: window.location.origin + window.location.pathname + '?ticker=' + t }};
@@ -203,17 +207,17 @@ def create_html_report(df):
     
     cards = ""
     for _, row in df.iterrows():
-        img_1y, img_3y, img_1m, is_above = generate_stock_images(row['Ticker'])
+        img_1y, img_max, img_1m, is_above = generate_stock_images(row['Ticker'])
         insight = all_insights.get(row['Ticker'], "分析中...")
         if img_1y:
             cards += f"""<div class="stock-card" id="{row['Ticker']}"><div class="card-header-row"><div>{row['Ticker']}</div><div>{row['Industry']}</div><div>{row['MarketCap']}</div><div>{row['PE']}</div><div>${row['Price']}</div><div style="color:#ffcccc;">+{row['Change']}%</div><div>{row['Volume']}</div></div>
             <div class="toggle-bar">
                 <button id="btn-1y-{row['Ticker']}" class="toggle-btn active" onclick="switchPeriod('{row['Ticker']}', '1y')">📅 1Y 日線</button>
-                <button id="btn-3y-{row['Ticker']}" class="toggle-btn" onclick="switchPeriod('{row['Ticker']}', '3y')">⏳ 3Y 日線</button>
+                <button id="btn-max-{row['Ticker']}" class="toggle-btn" onclick="switchPeriod('{row['Ticker']}', 'max')">♾️ MAX (Up to 3Y)</button>
             </div>
             <div class="chart-stack">
                 <img id="img-1y-{row['Ticker']}" src="data:image/png;base64,{img_1y}">
-                <img id="img-3y-{row['Ticker']}" src="data:image/png;base64,{img_3y}" style="display:none;">
+                <img id="img-max-{row['Ticker']}" src="data:image/png;base64,{img_max}" style="display:none;">
                 <img src="data:image/png;base64,{img_1m}">
             </div>
             <div class="analysis-box"><strong>🛡️ AI 策略師診斷：</strong><br>{insight}<div class="btn-group"><button class="action-btn share-btn" onclick="shareTicker('{row['Ticker']}', '{row['Price']}')">📲 分享此股票</button><a href="#top" class="action-btn">⬆ 返回總表</a></div></div></div>"""
