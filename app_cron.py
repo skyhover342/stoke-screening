@@ -1,4 +1,4 @@
-print(">>> [系統啟動] 正在初始化開發者測試環境...")
+print(">>> [系統啟動] 正在初始化具備快捷導航功能的 HTML 報告環境...")
 
 import os, time, datetime, io, base64, requests
 import pandas as pd
@@ -13,9 +13,7 @@ from google import genai
 # ==========================================
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 TARGET_MODEL = "models/gemini-2.5-flash"
-# --- 【測試開關】 ---
-TEST_MODE = True  # 改為 True 時：不消耗 API 額度，僅測試排版
-# ------------------
+TEST_MODE = True  # 開發階段維持 True，不消耗 API 
 
 # ==========================================
 # 2. 數據抓取與圖表生成
@@ -41,12 +39,12 @@ def fetch_and_filter_stocks():
                 })
             except: continue
         df = pd.DataFrame(data)
-        # 測試模式下只取前 2 支，正式模式取前 10 支
+        # 測試模式下只取 2 支，加快測試速度 
         return df.head(2) if TEST_MODE else df.head(10)
     except: return pd.DataFrame()
 
 def generate_charts_base64(ticker):
-    print(f">>> [圖表] 生成 {ticker} 指標...")
+    print(f">>> [圖表] 生成 {ticker} 技術圖表...")
     try:
         df = yf.download(ticker, period="1y", interval="1d", progress=False, threads=False)
         if df.empty: return None, 0, False
@@ -74,29 +72,24 @@ def generate_charts_base64(ticker):
 # ==========================================
 def get_ai_insight(row, rsi_val, is_above_200):
     if TEST_MODE:
-        # --- 模擬 AI 回傳內容，不消耗 API ---
-        return f"【測試模式】此為模擬分析文字。{row['Ticker']} 目前 RSI 為 {rsi_val:.2f}，且股價{'高於' if is_above_200 else '低於'} 200MA。建議維持觀察，等待成交量放大後再行佈局。此排版測試確保文字能正確在圖表下方顯示。"
+        return f"【測試模式模擬文字】{row['Ticker']} 技術面分析。RSI 為 {rsi_val:.2f}，價格{'高於' if is_above_200 else '低於'} 200MA。建議根據支撐位進行操作。" [cite: 1-905]
 
     if not GEMINI_KEY: return "無 API Key"
-    
     client = genai.Client(api_key=GEMINI_KEY)
-    status = "站上" if is_above_200 else "低於"
-    prompt = f"分析 {row['Ticker']} ({row['Company']})。價格 {row['Price']}, RSI {rsi_val:.2f}, 目前{status} 200MA。請以繁體中文給出：1. 技術面 2. 分數 3. 策略。150字內。"
-
+    prompt = f"分析 {row['Ticker']}。RSI {rsi_val:.2f}, 200MA 趨勢。繁體中文策略。"
     try:
         response = client.models.generate_content(model=TARGET_MODEL, contents=prompt)
-        time.sleep(45) # 正式模式需冷卻以防 429 
+        time.sleep(45) # 遵守 API 冷卻間隔 
         return response.text.replace('\n', '<br>')
-    except Exception as e:
-        return f"AI 請求失敗: {e}"
+    except Exception as e: return f"AI 請求失敗: {e}"
 
 # ==========================================
-# 4. HTML 報告渲染
+# 4. HTML 報告渲染 (加入導航功能)
 # ==========================================
 def create_html_report(df):
-    print(">>> [步驟 3] 整合 HTML 報告...")
+    print(">>> [步驟 3] 整合 HTML 報告與導航鏈結...")
     
-    html_content = f"""
+    html_header = f"""
     <!DOCTYPE html>
     <html lang="zh-TW">
     <head>
@@ -104,46 +97,75 @@ def create_html_report(df):
         <style>
             body {{ font-family: sans-serif; background: #f4f7f9; padding: 20px; }}
             .container {{ max-width: 900px; margin: 0 auto; }}
-            .header-info {{ text-align: right; color: #666; font-size: 14px; }}
-            .summary-table {{ width: 100%; border-collapse: collapse; background: white; margin: 20px 0; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }}
-            .summary-table th {{ background: #003366; color: white; padding: 12px; }}
-            .summary-table td {{ padding: 10px; border-bottom: 1px solid #eee; text-align: center; }}
-            .stock-card {{ background: white; border-radius: 12px; margin-bottom: 40px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); border: 1px solid #e0e6ed; overflow: hidden; }}
-            .card-header {{ background: #003366; color: white; padding: 15px; font-size: 20px; font-weight: bold; display: flex; justify-content: space-between; }}
+            #summary-table-top {{ width: 100%; border-collapse: collapse; background: white; margin-bottom: 50px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); border-radius: 8px; overflow: hidden; }}
+            #summary-table-top th {{ background: #003366; color: white; padding: 12px; text-align: center; }}
+            #summary-table-top td {{ padding: 12px; border-bottom: 1px solid #eee; text-align: center; }}
+            #summary-table-top tr:hover {{ background: #f1f5f9; cursor: pointer; }}
+            .ticker-link {{ color: #003366; text-decoration: none; font-weight: bold; display: block; width: 100%; height: 100%; }}
+            .ticker-link:hover {{ color: #d93025; }}
+            .stock-card {{ background: white; border-radius: 12px; margin-bottom: 60px; box-shadow: 0 6px 15px rgba(0,0,0,0.15); overflow: hidden; position: relative; scroll-margin-top: 20px; }}
+            .card-header {{ background: #003366; color: white; padding: 15px 25px; font-size: 22px; display: flex; justify-content: space-between; }}
             .chart-box {{ background: #1a1a1a; padding: 10px; text-align: center; }}
             .chart-box img {{ max-width: 100%; border-radius: 5px; }}
-            .analysis-box {{ padding: 20px; line-height: 1.8; color: #333; }}
-            .test-badge {{ background: #ffcc00; color: black; padding: 2px 8px; border-radius: 4px; font-size: 12px; }}
+            .analysis-box {{ padding: 25px; line-height: 1.8; }}
+            .back-to-top {{ display: inline-block; margin-top: 15px; padding: 8px 15px; background: #e2e8f0; color: #475569; text-decoration: none; border-radius: 5px; font-size: 14px; font-weight: bold; transition: background 0.2s; }}
+            .back-to-top:hover {{ background: #cbd5e1; }}
+            .badge-test {{ background: #fbbf24; color: #78350f; padding: 2px 8px; border-radius: 4px; font-size: 12px; }}
         </style>
     </head>
     <body>
-        <div class="container">
-            <h1 style="text-align:center; color:#003366;">📊 美股 AI 技術分析報告 {"<span class='test-badge'>TEST MODE</span>" if TEST_MODE else ""}</h1>
-            <div class="header-info">生成日期：{datetime.date.today()}</div>
+        <div class="container" id="top">
+            <h1 style="text-align:center; color:#003366;">📊 美股 AI 技術分析報告 {"<span class='badge-test'>TEST MODE</span>" if TEST_MODE else ""}</h1>
+            <p style="text-align:right; color:#666;">生成日期：{datetime.date.today()}</p>
             
-            <table class="summary-table">
-                <thead><tr><th>代碼</th><th>產業</th><th>現價</th><th>漲幅</th></tr></thead>
+            <table id="summary-table-top">
+                <thead>
+                    <tr><th>代碼 (點擊跳轉)</th><th>產業</th><th>現價</th><th>漲幅</th></tr>
+                </thead>
                 <tbody>
     """
+    
+    # 填充總表 (加入錨點連結)
+    summary_rows = ""
     for _, row in df.iterrows():
-        html_content += f"<tr><td><b>{row['Ticker']}</b></td><td>{row['Industry']}</td><td>{row['Price']}</td><td style='color:red;'>+{row['Change']}%</td></tr>"
-    html_content += "</tbody></table>"
+        summary_rows += f"""
+        <tr>
+            <td><a href="#{row['Ticker']}" class="ticker-link">{row['Ticker']}</a></td>
+            <td><a href="#{row['Ticker']}" class="ticker-link">{row['Industry']}</a></td>
+            <td><a href="#{row['Ticker']}" class="ticker-link">${row['Price']}</a></td>
+            <td style="color:red;"><a href="#{row['Ticker']}" class="ticker-link">+{row['Change']}%</a></td>
+        </tr>
+        """
+    
+    html_middle = "</tbody></table>"
 
+    # 填充個股卡片 (加入 id 供跳轉與返回按鈕)
+    stock_cards = ""
     for _, row in df.iterrows():
         img_b64, rsi, is_above = generate_charts_base64(row['Ticker'])
         if img_b64:
             ai_text = get_ai_insight(row, rsi, is_above)
-            html_content += f"""
-            <div class="stock-card">
-                <div class="card-header"><span>{row['Ticker']} - {row['Company']}</span><span>RSI: {rsi:.2f}</span></div>
+            stock_cards += f"""
+            <div class="stock-card" id="{row['Ticker']}">
+                <div class="card-header">
+                    <span>{row['Ticker']} - {row['Company']}</span>
+                    <span style="font-size: 16px;">RSI: {rsi:.2f}</span>
+                </div>
                 <div class="chart-box"><img src="data:image/png;base64,{img_b64}"></div>
-                <div class="analysis-box"><h3>🛡️ AI 策略師分析：</h3><p>{ai_text}</p></div>
+                <div class="analysis-box">
+                    <h3 style="margin-top:0; color:#003366;">🛡️ AI 策略師分析：</h3>
+                    <p>{ai_text}</p>
+                    <a href="#top" class="back-to-top">⬆ 返回總表</a>
+                </div>
             </div>
             """
     
-    html_content += "</div></body></html>"
-    with open("report.html", "w", encoding="utf-8") as f: f.write(html_content)
-    print(f"✅ 報告已生成 {'(測試模式)' if TEST_MODE else ''}。")
+    html_footer = "</div></body></html>"
+    
+    full_html = html_header + summary_rows + html_middle + stock_cards + html_footer
+    with open("report.html", "w", encoding="utf-8") as f: 
+        f.write(full_html)
+    print(f"✅ 導航版報告已生成 {'(測試模式)' if TEST_MODE else ''}。")
 
 if __name__ == "__main__":
     df_stocks = fetch_and_filter_stocks()
