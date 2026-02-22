@@ -13,7 +13,7 @@ from google import genai
 # ==========================================
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 TARGET_MODEL = "models/gemini-2.5-flash"
-TEST_MODE = True  # 開發階段維持 True，不消耗 API 
+TEST_MODE = True  # 開發階段維持 True，不消耗 API
 
 # ==========================================
 # 2. 數據抓取與圖表生成
@@ -39,7 +39,7 @@ def fetch_and_filter_stocks():
                 })
             except: continue
         df = pd.DataFrame(data)
-        # 測試模式下只取 2 支，加快測試速度 
+        # 測試模式下只取 2 支，加快測試速度
         return df.head(2) if TEST_MODE else df.head(10)
     except: return pd.DataFrame()
 
@@ -72,14 +72,15 @@ def generate_charts_base64(ticker):
 # ==========================================
 def get_ai_insight(row, rsi_val, is_above_200):
     if TEST_MODE:
-        return f"【測試模式模擬文字】{row['Ticker']} 技術面分析。RSI 為 {rsi_val:.2f}，價格{'高於' if is_above_200 else '低於'} 200MA。建議根據支撐位進行操作。" [cite: 1-905]
+        # 修正：移除誤植的引用標籤
+        return f"【測試模式模擬文字】{row['Ticker']} 技術面分析。RSI 為 {rsi_val:.2f}，價格{'高於' if is_above_200 else '低於'} 200MA。建議根據支撐位進行操作。"
 
     if not GEMINI_KEY: return "無 API Key"
     client = genai.Client(api_key=GEMINI_KEY)
     prompt = f"分析 {row['Ticker']}。RSI {rsi_val:.2f}, 200MA 趨勢。繁體中文策略。"
     try:
         response = client.models.generate_content(model=TARGET_MODEL, contents=prompt)
-        time.sleep(45) # 遵守 API 冷卻間隔 
+        time.sleep(45) 
         return response.text.replace('\n', '<br>')
     except Exception as e: return f"AI 請求失敗: {e}"
 
@@ -125,7 +126,6 @@ def create_html_report(df):
                 <tbody>
     """
     
-    # 填充總表 (加入錨點連結)
     summary_rows = ""
     for _, row in df.iterrows():
         summary_rows += f"""
@@ -139,7 +139,6 @@ def create_html_report(df):
     
     html_middle = "</tbody></table>"
 
-    # 填充個股卡片 (加入 id 供跳轉與返回按鈕)
     stock_cards = ""
     for _, row in df.iterrows():
         img_b64, rsi, is_above = generate_charts_base64(row['Ticker'])
