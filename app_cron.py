@@ -18,11 +18,11 @@ from google.genai import types
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 EXCLUDE_INDUSTRIES = ['Shell Companies', 'Blank Check', 'SPAC']
 MAX_CHANGE = 40.0
-# 使用你診斷清單中確認可用的 Pro 版本
+# 使用穩定的 2.5 Pro 版本
 TARGET_MODEL = "models/gemini-2.5-pro"
 
 # ==========================================
-# 2. 強韌版 Finviz 爬蟲 (精準對齊 v=111 欄位)
+# 2. 強韌版 Finviz 爬蟲
 # ==========================================
 def fetch_and_filter_stocks():
     print("正在連線至 Finviz 並解析資料...")
@@ -56,7 +56,6 @@ def fetch_and_filter_stocks():
             if len(tds) < 11: continue
             
             try:
-                # 精準對齊 v=111 欄位
                 ticker     = tds[1].text.strip()
                 company    = tds[2].text.strip()
                 sector     = tds[3].text.strip()
@@ -87,7 +86,7 @@ def fetch_and_filter_stocks():
         return pd.DataFrame()
 
 # ==========================================
-# 3. 圖表生成 (解決 Series 判斷與警告問題)
+# 3. 圖表生成 (修復警告與數值判斷)
 # ==========================================
 def generate_charts(ticker):
     print(f"正在生成 {ticker} 的圖表...")
@@ -98,7 +97,6 @@ def generate_charts(ticker):
 
         df_daily['200MA'] = df_daily['Close'].rolling(window=200).mean()
         
-        # 解決 ValueError: 使用 .values[-1] 確保是純數值
         last_close = df_daily['Close'].values[-1]
         last_ma200 = df_daily['200MA'].values[-1]
         is_above_200 = bool(last_close > last_ma200)
@@ -129,7 +127,7 @@ def generate_charts(ticker):
         return None, False
 
 # ==========================================
-# 4. Gemini 2.5 Pro 分析 (強化容錯機制)
+# 4. Gemini 2.5 Pro 分析 (強化頻率控制)
 # ==========================================
 def get_ai_insight(row, is_above_200):
     if not GEMINI_KEY: return "未偵測到 API Key。"
@@ -152,36 +150,38 @@ def get_ai_insight(row, is_above_200):
                 model=TARGET_MODEL,
                 contents=prompt
             )
-            # Pro 版本冷卻時間建議拉長，避免 429
-            time.sleep(35) 
+            # 延長冷卻至 45 秒，這通常是解決 429 的關鍵
+            time.sleep(45) 
             return response.text
         except Exception as e:
             err_str = str(e)
             if "429" in err_str or "503" in err_str:
                 wait_sec = (attempt + 1) * 30
-                print(f"⚠️ {TARGET_MODEL} 繁忙 ({err_str[:20]})，等待 {wait_sec}s 重試...")
+                print(f"⚠️ API 繁忙，等待 {wait_sec}s 後重試...")
                 time.sleep(wait_sec)
             else:
                 return f"AI 分析失敗: {e}"
-    return "已達最大重試次數，略過分析。"
+    return "已達最大重試次數，跳過分析。"
 
 # ==========================================
-# 5. PDF 報告生成與調度
+# 5. PDF 報告生成 (修復所有 DeprecationWarning)
 # ==========================================
 class PDFReport(FPDF):
     def header(self):
         self.set_font('helvetica', 'B', 16)
-        self.cell(0, 10, text=f'US Stock AI Report - {datetime.date.today()}', align='C', ln=True)
+        # 修正：使用 new_x 和 new_y 取代 ln
+        self.cell(0, 10, text=f'US Stock AI Report - {datetime.date.today()}', align='C', new_x="LMARGIN", new_y="NEXT")
         self.ln(10)
 
 def create_report(df):
     pdf = PDFReport()
     pdf.set_auto_page_break(auto=True, margin=15)
     
-    # --- 頁面 1：摘要表格 ---
+    # --- 摘要頁面 ---
     pdf.add_page()
     pdf.set_font('helvetica', 'B', 12)
-    pdf.cell(0, 10, text="Market Scan Summary (Top Movers):", ln=True)
+    # 修正：使用 new_x 和 new_y 取代 ln
+    pdf.cell(0, 10, text="Market Scan Summary (Top Movers):", new_x="LMARGIN", new_y="NEXT")
     pdf.ln(5)
     
     pdf.set_font('helvetica', 'B', 8)
@@ -199,10 +199,11 @@ def create_report(df):
         pdf.cell(25, 10, text=str(row['MarketCap']), border=1)
         pdf.cell(25, 10, text=str(row['PE']), border=1)
         pdf.cell(20, 10, text=str(row['Price']), border=1)
-        pdf.cell(25, 10, text=f"{row['Change']}%", border=1, ln=True)
+        # 修正：使用 new_x 和 new_y 取代 ln
+        pdf.cell(25, 10, text=f"{row['Change']}%", border=1, new_x="LMARGIN", new_y="NEXT")
 
-    # --- 頁面 2+：個股分析 (最多 12 支，確保 Pro 配額) ---
-    for i, (index, row) in enumerate(df.head(12).iterrows()):
+    # --- 個股詳細分析 (限制 10 支以保證成功率) ---
+    for i, (index, row) in enumerate(df.head(10).iterrows()):
         ticker = row['Ticker']
         img_buf, is_above_200 = generate_charts(ticker)
         if img_buf is None: continue
@@ -211,15 +212,15 @@ def create_report(df):
         
         pdf.add_page()
         pdf.set_font('helvetica', 'B', 14)
-        pdf.cell(0, 10, text=f"Detailed Analysis: {ticker} - {row['Company']}", ln=True)
+        pdf.cell(0, 10, text=f"Detailed Analysis: {ticker} - {row['Company']}", new_x="LMARGIN", new_y="NEXT")
         
         img_path = f"temp_{ticker}.png"
         with open(img_path, "wb") as f: f.write(img_buf.getbuffer())
         pdf.image(img_path, x=10, y=30, w=190)
         
-        pdf.set_y(150)
+        pdf.set_y(155)
         pdf.set_font('helvetica', 'B', 12)
-        pdf.cell(0, 10, text="Gemini 2.5 Pro Strategist Insight:", ln=True)
+        pdf.cell(0, 10, text="AI Strategist Insight:", new_x="LMARGIN", new_y="NEXT")
         pdf.set_font('helvetica', '', 10)
         
         clean_text = ai_text.replace('\u2022', '-').encode('latin-1', 'ignore').decode('latin-1')
@@ -235,7 +236,7 @@ def create_report(df):
 if __name__ == "__main__":
     df = fetch_and_filter_stocks()
     if not df.empty:
-        # 如果標的太多，我們限制前 15 支進入摘要，前 12 支進入深度分析
+        # 傳入前 15 支標的
         create_report(df.head(15))
     else:
         print("今日無符合標的。")
