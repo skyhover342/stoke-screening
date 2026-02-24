@@ -1,5 +1,5 @@
-# 版本號碼：v1.5.6
-print(">>> [系統啟動] v1.5.6：總表產業分組、優化手機導航、強化視覺分類...")
+# 版本號碼：v1.5.7
+print(">>> [系統啟動] v1.5.7：移除產業分隔行、維持排序、優化手機導航導向...")
 
 import os, time, datetime, io, base64, requests, glob, json
 import pandas as pd
@@ -17,13 +17,13 @@ except ImportError:
 # ==========================================
 # 1. 核心參數
 # ==========================================
-VERSION = "v1.5.6"
+VERSION = "v1.5.7"
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 TARGET_MODEL = "models/gemini-2.0-flash" 
-TEST_MODE = True  # 測試模式：不呼叫 API，僅抓 2 支測試
+TEST_MODE = True  # 測試模式，測試完畢請改回 False
 
 # ==========================================
-# 2. 數據抓取與產業排序
+# 2. 數據抓取與分類排序
 # ==========================================
 def is_market_open_today():
     if TEST_MODE: return True
@@ -37,7 +37,7 @@ def is_market_open_today():
     except: return True
 
 def fetch_and_filter_stocks():
-    print(f">>> [步驟 1] 抓取數據並執行產業分類排序...")
+    print(f">>> [步驟 1] 抓取數據並執行產業排序 (無間隔模式)...")
     url = "https://finviz.com/screener.ashx?v=111&f=ind_stocksonly,sh_curvol_o500,sh_price_o1,sh_relvol_o5,ta_change_u"
     headers = {'User-Agent': 'Mozilla/5.0'}
     try:
@@ -58,19 +58,16 @@ def fetch_and_filter_stocks():
                     "Change": change_val, "Volume": tds[10].text.strip()
                 })
             except: continue
-        
         df = pd.DataFrame(data)
         if df.empty: return df
-        
-        # --- 核心需求：按產業(Industry)分組，再按代碼排序 ---
+        # --- 保持排序，但 HTML 生成時不加分隔線 ---
         df = df.sort_values(by=['Industry', 'Ticker'], ascending=[True, True])
-        
         return df.head(2) if TEST_MODE else df
     except Exception as e:
         print(f"❌ 抓取失敗: {e}"); return pd.DataFrame()
 
 # ==========================================
-# 3. 專業繪圖 (維持視覺一致性)
+# 3. 專業繪圖 (視覺標準化)
 # ==========================================
 def generate_chart(df_plot, height=800):
     fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.06, row_heights=[0.5, 0.28, 0.22], specs=[[{"secondary_y": True}], [{"secondary_y": False}], [{"secondary_y": False}]])
@@ -132,10 +129,10 @@ def generate_stock_images(ticker):
 # ==========================================
 def get_batch_ai_insights(df_subset):
     tickers = df_subset['Ticker'].tolist()
-    if TEST_MODE: return {t: f"<b>【測試診斷】</b>：產業 [{df_subset[df_subset['Ticker']==t]['Industry'].values[0]}] 模擬分析文字。" for t in tickers}
+    if TEST_MODE: return {t: f"測試診斷 - 產業: {df_subset[df_subset['Ticker']==t]['Industry'].values[0]}" for t in tickers}
     if not GEMINI_KEY: return {t: "❌ 無 API KEY" for t in tickers}
     summary = "".join([f"- {r['Ticker']}: ${r['Price']} ({r['Change']}%) [{r['Industry']}]\n" for _, r in df_subset.iterrows()])
-    prompt = f"分析以下美股技術趨勢，針對趨勢、動能、籌碼異動給予 150-200 字建議。繁體中文。回傳 JSON：{{\"Ticker\": \"分析\"}} \n數據：\n{summary}"
+    prompt = f"你是專業分析師。深度診斷以下股票技術趨勢：\n{summary}\n要求包含趨勢、動能與爆量點解析，150-200字。繁體中文。回傳 JSON：{{\"Ticker\": \"分析\"}}"
     try:
         client = genai.Client(api_key=GEMINI_KEY); resp = client.models.generate_content(model=TARGET_MODEL, contents=prompt)
         raw = resp.text.strip().replace('```json', '').replace('```', '')
@@ -143,7 +140,7 @@ def get_batch_ai_insights(df_subset):
     except: return {t: "⚠️ 分析產出中..." for t in tickers}
 
 # ==========================================
-# 5. HTML 生成 (產業分隔與導航優化)
+# 5. HTML 生成 (精簡總表與智慧導航)
 # ==========================================
 def create_html_report(df):
     ny_tz = pytz.timezone('America/New_York')
@@ -152,22 +149,20 @@ def create_html_report(df):
     os.makedirs("history", exist_ok=True)
     history_files = sorted(glob.glob("history/report_*.html"), reverse=True)
     
-    # 導航列優化：加入返回首頁按鈕
-    def get_nav_bar(is_main):
-        home_btn = "" if is_main else '<a href="../index.html" class="history-item" style="background:#003366;color:white;">🏠 返回最新報告</a>'
-        lks = links_main if is_main else links_hist
-        return f'<div class="history-bar"><div style="font-weight:bold;margin-right:10px;color:#003366;white-space:nowrap;">📅 存檔：</div>{home_btn}{lks}</div>'
-
     links_main = "".join([f'<a href="./history/report_{f.split("_")[1][:8]}.html" class="history-item">{f.split("_")[1][:4]}-{f.split("_")[1][4:6]}-{f.split("_")[1][6:8]}</a>' for f in history_files])
     links_hist = "".join([f'<a href="./report_{f.split("_")[1][:8]}.html" class="history-item">{f.split("_")[1][:4]}-{f.split("_")[1][4:6]}-{f.split("_")[1][6:8]}</a>' for f in history_files])
     
+    def get_nav(is_main):
+        home = "" if is_main else '<a href="../index.html" class="history-item" style="background:#003366;color:white;font-weight:bold;">🏠 返回最新</a>'
+        return f'<div class="history-bar"><div style="font-weight:bold;margin-right:10px;color:#003366;white-space:nowrap;">📅 存檔：</div>{home}{links_main if is_main else links_hist}</div>'
+
     all_insights = {}
-    print(f">>> [步驟 2] 開始分析 (共 {len(df)} 支)...")
+    print(f">>> [步驟 2] 開始 AI 分析 (共 {len(df)} 支股票)...")
     for i in range(0, len(df), 2): all_insights.update(get_batch_ai_insights(df.iloc[i:i+2]))
 
     ICON_URL = "https://cdn-icons-png.flaticon.com/512/2422/2422796.png"
-    def build_page(is_main):
-        return f"""<!DOCTYPE html><html lang="zh-TW"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><link rel="icon" href="{ICON_URL}"><title>AI 美股深度掃描</title>
+    def build_page(is_m):
+        return f"""<!DOCTYPE html><html lang="zh-TW"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><link rel="icon" href="{ICON_URL}"><title>AI 美股掃描</title>
         <style>
             body {{ font-family: sans-serif; background: #f0f2f5; padding: 10px; margin: 0; }} .container {{ max-width: 1100px; margin: 0 auto; }}
             .history-bar {{ background: white; padding: 15px; border-radius: 8px; margin-bottom: 20px; display: flex; align-items: center; overflow-x: auto; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }}
@@ -175,8 +170,6 @@ def create_html_report(df):
             .summary-table-wrapper {{ overflow-x: auto; }} .summary-table {{ width: 100%; border-collapse: collapse; background: white; margin-bottom: 40px; font-size: 12px; min-width: 800px; }}
             .summary-table th {{ background: #003366; color: white; padding: 12px; }} .summary-table td {{ border-bottom: 1px solid #eee; text-align: center; padding: 10px; cursor: pointer; }}
             .summary-table tr:hover {{ background-color: #f1f5f9; }}
-            /* 產業分隔列樣式 */
-            .industry-header {{ background-color: #e2e8f0; color: #475569; font-weight: bold; text-align: left !important; padding-left: 15px !important; font-size: 11px; letter-spacing: 1px; }}
             .stock-card {{ background: white; border-radius: 12px; margin-bottom: 60px; overflow: hidden; box-shadow: 0 6px 20px rgba(0,0,0,0.15); scroll-margin-top: 20px; }}
             .card-header-row {{ background: #003366; color: white; padding: 12px; display: grid; grid-template-columns: 80px 200px 100px 80px 80px 80px 1fr; text-align: center; font-size: 13px; font-weight: bold; align-items: center; }}
             @media (max-width: 768px) {{ .card-header-row {{ grid-template-columns: repeat(2, 1fr); font-size: 11px; gap: 8px; }} }}
@@ -202,22 +195,16 @@ def create_html_report(df):
                 const p = new URLSearchParams(window.location.search); const t = p.get('ticker');
                 if (t) {{ const e = document.getElementById(t.toUpperCase()); if (e) {{ setTimeout(() => {{ e.scrollIntoView({{ behavior: 'smooth', block: 'start' }}); }}, 600); }} }}
             }};
-        </script></head><body><div class="container" id="top">{get_nav_bar(is_main)}
+        </script></head><body><div class="container" id="top">{get_nav(is_m)}
         <h1 style="color:#003366; text-align:center; margin-bottom: 5px;">📊 美股 AI 全量深度報告 {VERSION}</h1>
         <h3 style="color:#666; text-align:center; margin-top: 0; font-weight: normal;">🇺🇸 美股交易日：{today_ny}</h3>
         <div class="summary-table-wrapper"><table class="summary-table"><thead><tr><th>代碼</th><th>公司</th><th>產業</th><th>市值</th><th>P/E</th><th>價格</th><th>漲幅</th><th>成交量</th></tr></thead><tbody>"""
 
-    def get_rows_html(df_input):
-        html = ""
-        current_industry = ""
-        for _, row in df_input.iterrows():
-            # --- 產業分隔列邏輯 ---
-            if row['Industry'] != current_industry:
-                current_industry = row['Industry']
-                html += f'<tr><td colspan="8" class="industry-header">📂 {current_industry}</td></tr>'
-            
-            html += f"<tr onclick=\"window.location='#{row['Ticker']}';\"><td><b>{row['Ticker']}</b></td><td>{row['Company']}</td><td>{row['Industry']}</td><td>{row['MarketCap']}</td><td>{row['PE']}</td><td>${row['Price']}</td><td style='color:red;'>+{row['Change']}%</td><td>{row['Volume']}</td></tr>"
-        return html
+    def get_rows(df_in):
+        h = ""
+        for _, row in df_in.iterrows():
+            h += f"<tr onclick=\"window.location='#{row['Ticker']}';\"><td><b>{row['Ticker']}</b></td><td>{row['Company']}</td><td>{row['Industry']}</td><td>{row['MarketCap']}</td><td>{row['PE']}</td><td>${row['Price']}</td><td style='color:red;'>+{row['Change']}%</td><td>{row['Volume']}</td></tr>"
+        return h
 
     cards = ""
     for _, row in df.iterrows():
@@ -229,12 +216,12 @@ def create_html_report(df):
             <div class="chart-stack"><img id="img-1y-{row['Ticker']}" src="data:image/png;base64,{i1}"><img id="img-max-{row['Ticker']}" src="data:image/png;base64,{im}" style="display:none;"><img src="data:image/png;base64,{i1m}"></div>
             <div class="analysis-box"><strong>🛡️ AI 策略師深度診斷：</strong><br>{ins}<div class="btn-group"><button class="action-btn share-btn" onclick="shareTicker('{row['Ticker']}', '{row['Price']}')">📲 分享此股票</button><a href="#top" class="action-btn">⬆ 返回總表</a></div></div></div>"""
     
-    rows_html = get_rows_html(df)
+    rows_h = get_rows(df)
     with open("index.html", "w", encoding="utf-8") as f: 
-        f.write(build_page(True) + rows_html + "</tbody></table></div>" + cards + "</div></body></html>")
+        f.write(build_page(True) + rows_h + "</tbody></table></div>" + cards + "</div></body></html>")
     with open(f"history/report_{today_str}.html", "w", encoding="utf-8") as f: 
-        f.write(build_page(False) + rows_html + "</tbody></table></div>" + cards + "</div></body></html>")
-    print(f"✅ v1.5.6 產出完成。產業已分類。")
+        f.write(build_page(False) + rows_h + "</tbody></table></div>" + cards + "</div></body></html>")
+    print(f"✅ v1.5.7 產出完成。總表已簡化。")
 
 if __name__ == "__main__":
     if is_market_open_today():
