@@ -20,7 +20,7 @@ except ImportError:
 VERSION = "v1.5.1"
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 TARGET_MODEL = "models/gemini-2.5-flash"
-TEST_MODE = False  # 正式營運：處理全量數據並呼叫 AI
+TEST_MODE = True  # 正式營運：處理全量數據並呼叫 AI
 
 # ==========================================
 # 2. 數據環境與抓取
