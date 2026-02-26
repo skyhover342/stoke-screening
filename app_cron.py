@@ -1,5 +1,5 @@
-# 版本號碼：v1.6.1
-print(">>> [系統啟動] v1.6.1：切換 Gemini 3 Flash、排除空殼公司、強化全量視覺...")
+# 版本號碼：v1.7.0
+print(">>> [系統啟動] v1.7.0 高清多維度版：提升解析度、紅綠成交量、五段式時段切換...")
 
 import os, time, datetime, io, base64, requests, glob, json
 import pandas as pd
@@ -17,13 +17,13 @@ except ImportError:
 # ==========================================
 # 1. 核心參數
 # ==========================================
-VERSION = "v1.6.1"
+VERSION = "v1.7.0"
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
-TARGET_MODEL = "models/gemini-2.5-flash" # 使用最新模型
-TEST_MODE = False # ⚠️ 正式營運請維持 False
+TARGET_MODEL = "models/gemini-3-flash"
+TEST_MODE = False 
 
 # ==========================================
-# 2. 數據抓取與精準過濾
+# 2. 數據抓取與精準過濾 (Shell Company & 40% Filter)
 # ==========================================
 def is_market_open_today():
     if TEST_MODE: return True
@@ -37,7 +37,7 @@ def is_market_open_today():
     except: return True
 
 def fetch_and_filter_stocks():
-    print(f">>> [步驟 1] 抓取數據並執行精準過濾 (排除暴衝股與空殼公司)...")
+    print(f">>> [步驟 1] 抓取並過濾數據...")
     url = "https://finviz.com/screener.ashx?v=111&f=ind_stocksonly,sh_curvol_o500,sh_price_o1,sh_relvol_o5,ta_change_u"
     headers = {'User-Agent': 'Mozilla/5.0'}
     try:
@@ -52,14 +52,8 @@ def fetch_and_filter_stocks():
                 name = tds[2].text.strip()
                 industry = tds[4].text.strip()
                 change_val = float(tds[9].text.strip('%'))
-                
-                # --- 精準過濾邏輯 ---
-                # 1. 過濾漲幅 > 40% 的妖股
                 if change_val > 40: continue 
-                # 2. 過濾 Shell Company (空殼公司/SPAC)
-                if "shell" in name.lower() or "shell" in industry.lower():
-                    print(f"🚫 已排除空殼公司: {tds[1].text.strip()} ({name})")
-                    continue
+                if "shell" in name.lower() or "shell" in industry.lower(): continue
 
                 data.append({
                     "Ticker": tds[1].text.strip(), "Company": name,
@@ -70,14 +64,12 @@ def fetch_and_filter_stocks():
             except: continue
         df = pd.DataFrame(data)
         if df.empty: return df
-        # 按產業排序，相同的放一起
         df = df.sort_values(by=['Industry', 'Ticker'], ascending=[True, True])
         return df.head(2) if TEST_MODE else df
-    except Exception as e:
-        print(f"❌ 抓取失敗: {e}"); return pd.DataFrame()
+    except: return pd.DataFrame()
 
 # ==========================================
-# 3. 繪圖核心 (1m 線圖視覺歸位)
+# 3. 專業繪圖 (高清渲染與紅綠成交量)
 # ==========================================
 def generate_chart(df_plot, is_1m=False):
     rows, height = (3, 800) if not is_1m else (1, 450)
@@ -85,8 +77,12 @@ def generate_chart(df_plot, is_1m=False):
                         row_heights=[0.5, 0.28, 0.22] if not is_1m else [1.0],
                         specs=[[{"secondary_y": True}]] + [[{"secondary_y": False}]]*(rows-1))
     
-    # 成交量同步 rgba(210, 210, 210, 0.8) & 移除邊框
-    fig.add_trace(go.Bar(x=df_plot.index, y=df_plot['Volume'], marker=dict(color='rgba(210, 210, 210, 0.8)', line_width=0), showlegend=False), row=1, col=1, secondary_y=True)
+    # --- 優化：紅綠成交量顏色邏輯 ---
+    vol_colors = ['rgba(0,255,0,0.6)' if row['Close'] >= row['Open'] else 'rgba(255,0,0,0.6)' for _, row in df_plot.iterrows()]
+    
+    # 成交量
+    fig.add_trace(go.Bar(x=df_plot.index, y=df_plot['Volume'], marker=dict(color=vol_colors, line_width=0), showlegend=False), row=1, col=1, secondary_y=True)
+    # K線
     fig.add_trace(go.Candlestick(x=df_plot.index, open=df_plot['Open'], high=df_plot['High'], low=df_plot['Low'], close=df_plot['Close'], name="Price"), row=1, col=1, secondary_y=False)
     
     if not is_1m:
@@ -107,12 +103,14 @@ def generate_chart(df_plot, is_1m=False):
 
     fig.update_yaxes(range=[0, df_plot['Volume'].max()*1.8], secondary_y=True, showgrid=False, row=1)
     fig.update_layout(height=height, width=1050, template="plotly_dark", xaxis_rangeslider_visible=False, barmode='overlay', margin=dict(l=10, r=10, t=30, b=10))
-    return base64.b64encode(fig.to_image(format="png")).decode('utf-8')
+    
+    # --- 優化：增加 scale=2 提升解析度，防止手機放大模糊 ---
+    return base64.b64encode(fig.to_image(format="png", scale=2)).decode('utf-8')
 
 def generate_stock_images(ticker):
     try:
         df_all = yf.download(ticker, period="4y", interval="1d", progress=False)
-        if df_all.empty: return None, None, None, False
+        if df_all.empty: return [None]*6
         if isinstance(df_all.columns, pd.MultiIndex): df_all.columns = df_all.columns.get_level_values(0)
         df_all = df_all.ffill()
         df_all['SMA20']=df_all['Close'].rolling(20, min_periods=1).mean(); df_all['SMA50']=df_all['Close'].rolling(50, min_periods=1).mean(); df_all['SMA200']=df_all['Close'].rolling(200, min_periods=1).mean()
@@ -120,55 +118,63 @@ def generate_stock_images(ticker):
         df_all['MACD']=exp1-exp2; df_all['Signal']=df_all['MACD'].ewm(span=9, adjust=False).mean(); df_all['Hist']=df_all['MACD']-df_all['Signal']
         delta=df_all['Close'].diff(); g=delta.where(delta>0,0).rolling(14, min_periods=1).mean(); l=-delta.where(delta<0,0).rolling(14, min_periods=1).mean()
         df_all['RSI']=100-(100/(1+g/l))
-        img1y=generate_chart(df_all.tail(252)); imgmax=generate_chart(df_all.tail(min(len(df_all), 756)))
-        
-        df_1m=yf.download(ticker, period="1d", interval="1m", progress=False, prepost=True)
-        img1m=""
-        if not df_1m.empty:
-            if isinstance(df_1m.columns, pd.MultiIndex): df_1m.columns = df_1m.columns.get_level_values(0)
-            df_1m.index = df_1m.index.tz_convert('America/New_York')
-            df_1m['Vol_Avg'] = df_1m['Volume'].rolling(5, min_periods=1).mean()
+
+        # 五段時段生成
+        img_1m = generate_chart(df_all.tail(21))
+        img_3m = generate_chart(df_all.tail(63))
+        img_6m = generate_chart(df_all.tail(126))
+        img_1y = generate_chart(df_all.tail(252))
+        img_max = generate_chart(df_all.tail(min(len(df_all), 756)))
+
+        # 1分鐘圖渲染
+        df_1m_data = yf.download(ticker, period="1d", interval="1m", progress=False, prepost=True)
+        img_intra = ""
+        if not df_1m_data.empty:
+            if isinstance(df_1m_data.columns, pd.MultiIndex): df_1m_data.columns = df_1m_data.columns.get_level_values(0)
+            df_1m_data.index = df_1m_data.index.tz_convert('America/New_York')
+            df_1m_data['Vol_Avg'] = df_1m_data['Volume'].rolling(5, min_periods=1).mean()
+            
+            # 使用紅綠成交量邏輯
+            intra_colors = ['rgba(0,255,0,0.6)' if r['Close'] >= r['Open'] else 'rgba(255,0,0,0.6)' for _, r in df_1m_data.iterrows()]
+            
             fig2 = make_subplots(specs=[[{"secondary_y": True}]])
-            fig2.add_trace(go.Bar(x=df_1m.index, y=df_1m['Volume'], marker=dict(color='rgba(210, 210, 210, 0.8)', line_width=0), showlegend=False), secondary_y=True)
-            fig2.add_trace(go.Candlestick(x=df_1m.index, open=df_1m['Open'], high=df_1m['High'], low=df_1m['Low'], close=df_1m['Close']), secondary_y=False)
-            reg = df_1m[df_1m.index.time <= datetime.time(16, 0)]
+            fig2.add_trace(go.Bar(x=df_1m_data.index, y=df_1m_data['Volume'], marker=dict(color=intra_colors, line_width=0), showlegend=False), secondary_y=True)
+            fig2.add_trace(go.Candlestick(x=df_1m_data.index, open=df_1m_data['Open'], high=df_1m_data['High'], low=df_1m_data['Low'], close=df_1m_data['Close']), secondary_y=False)
+            
+            reg = df_1m_data[df_1m_data.index.time <= datetime.time(16, 0)]
             if not reg.empty:
                 cp=reg.iloc[-1]; ct=reg.index[-1]
                 fig2.add_annotation(x=ct, y=cp['Close'], text="🔔 CLOSE (EST)", showarrow=True, arrowhead=2, font=dict(color="white", size=10), bgcolor="#003366", ay=-50)
-                fig2.add_shape(type="line", x0=df_1m.index[0], y0=cp['Close'], x1=df_1m.index[-1], y1=cp['Close'], line=dict(color="red", width=1.5, dash="dot"))
-            spikes = df_1m[df_1m['Volume'] > df_1m['Vol_Avg']*3].copy()
+                fig2.add_shape(type="line", x0=df_1m_data.index[0], y0=cp['Close'], x1=df_1m_data.index[-1], y1=cp['Close'], line=dict(color="red", width=1.5, dash="dot"))
+            
+            spikes = df_1m_data[df_1m_data['Volume'] > df_1m_data['Vol_Avg']*3].copy()
             for idx, row in spikes.sort_values(by='Volume', ascending=False).head(10).iterrows():
                 t_color = "lime" if row['Close'] > row['Open'] else "red"
                 fig2.add_annotation(x=idx, y=row['High'], text="▲ BUY" if row['Close'] > row['Open'] else "▼ SELL", showarrow=True, arrowhead=1, arrowcolor=t_color, font=dict(size=11, color=t_color, weight='bold'), bgcolor="black", opacity=0.9, ay=-40)
+            
             fig2.update_layout(height=450, width=1050, template="plotly_dark", xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=30, b=10))
-            img1m = base64.b64encode(fig2.to_image(format="png")).decode('utf-8')
-        return img1y, imgmax, img1m, bool(df_all['Close'].iloc[-1] > df_all['SMA200'].iloc[-1])
-    except: return None, None, None, False
+            img_intra = base64.b64encode(fig2.to_image(format="png", scale=2)).decode('utf-8')
+            
+        return img_1m, img_3m, img_6m, img_1y, img_max, img_intra, bool(df_all['Close'].iloc[-1] > df_all['SMA200'].iloc[-1])
+    except: return [None]*7
 
 # ==========================================
-# 4. 批量 AI 分析 (診斷型模型呼叫)
+# 4. 批量 AI 分析 (Gemini 3 Flash)
 # ==========================================
 def get_batch_ai_insights(df_subset):
     tickers = df_subset['Ticker'].tolist()
-    if TEST_MODE: return {t: f"<b>【測試診斷】</b>：API 呼叫已攔截，模型將為 {TARGET_MODEL}。" for t in tickers}
-    if not GEMINI_KEY: return {t: "❌ 無 API KEY" for t in tickers}
-    
+    if TEST_MODE: return {t: f"<b>【測試診斷】</b>：正在測試解析度與五段時段切換。" for t in tickers}
+    if not GEMINI_KEY: return {t: "❌ 無 API" for t in tickers}
     summary = "".join([f"- {r['Ticker']}: ${r['Price']} ({r['Change']}%) [{r['Industry']}]\n" for _, r in df_subset.iterrows()])
-    prompt = f"分析以下美股技術趨勢，提供 150-200 字深度建議。繁體中文。回傳 JSON：{{\"Ticker\": \"分析內容\"}} \n數據：\n{summary}"
-    
+    prompt = f"分析美股技術趨勢，提供 150-200 字深度建議。繁體中文。回傳 JSON：{{\"Ticker\": \"分析\"}} \n數據：\n{summary}"
     try:
-        print(f"📡 呼叫 {TARGET_MODEL} 分析 {tickers}...")
-        client = genai.Client(api_key=GEMINI_KEY)
-        response = client.models.generate_content(model=TARGET_MODEL, contents=prompt)
-        raw_text = response.text.strip().replace('```json', '').replace('```', '')
-        insights = json.loads(raw_text)
-        time.sleep(50); return insights
-    except Exception as e:
-        print(f"❌ API 失敗 {tickers}: {str(e)}")
-        return {t: f"⚠️ 分析產出中... (錯誤碼: {str(e)[:40]})" for t in tickers}
+        client = genai.Client(api_key=GEMINI_KEY); resp = client.models.generate_content(model=TARGET_MODEL, contents=prompt)
+        raw = resp.text.strip().replace('```json', '').replace('```', '')
+        time.sleep(50); return json.loads(raw)
+    except: return {t: "⚠️ 分析產出中..." for t in tickers}
 
 # ==========================================
-# 5. HTML 生成 (維持導航與分類)
+# 5. HTML 生成 (五段切換按鈕與解析度支持)
 # ==========================================
 def create_html_report(df):
     ny_tz = pytz.timezone('America/New_York')
@@ -202,21 +208,22 @@ def create_html_report(df):
             .card-header-row {{ background: #003366; color: white; padding: 12px; display: grid; grid-template-columns: 80px 200px 100px 80px 80px 80px 1fr; text-align: center; font-size: 13px; font-weight: bold; align-items: center; }}
             @media (max-width: 768px) {{ .card-header-row {{ grid-template-columns: repeat(2, 1fr); font-size: 11px; gap: 8px; }} }}
             .chart-stack {{ display: flex; flex-direction: column; gap: 20px; align-items: center; background: #1a1a1a; padding: 15px; }} .chart-stack img {{ width: 100%; height: auto; border: 1px solid #444; }}
-            .toggle-bar {{ background: #333; padding: 10px; width: 100%; display: flex; justify-content: center; gap: 10px; border-bottom: 1px solid #444; }}
-            .toggle-btn {{ background: #555; color: white; border: none; padding: 5px 20px; border-radius: 4px; cursor: pointer; font-size: 12px; }} .toggle-btn.active {{ background: #2563eb; font-weight: bold; }}
+            .toggle-bar {{ background: #333; padding: 10px; width: 100%; display: flex; justify-content: center; gap: 5px; flex-wrap: wrap; border-bottom: 1px solid #444; }}
+            .toggle-btn {{ background: #555; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 11px; }} .toggle-btn.active {{ background: #2563eb; font-weight: bold; }}
             .analysis-box {{ padding: 25px; line-height: 1.8; background: #f8fafc; font-size: 14px; border-top: 1px solid #eee; }}
             .btn-group {{ margin-top: 15px; display: flex; justify-content: flex-end; gap: 10px; }}
             .action-btn {{ background: #003366; color: white; text-decoration: none; padding: 10px 18px; border-radius: 6px; font-size: 12px; font-weight: bold; border: none; cursor: pointer; }} .share-btn {{ background: #2563eb; }}
         </style>
         <script>
             function switchPeriod(ticker, period) {{
-                const i1y = document.getElementById('img-1y-'+ticker); const im = document.getElementById('img-max-'+ticker);
-                const b1y = document.getElementById('btn-1y-'+ticker); const bm = document.getElementById('btn-max-'+ticker);
-                if(period === 'max') {{ i1y.style.display='none'; im.style.display='block'; b1y.classList.remove('active'); bm.classList.add('active'); }}
-                else {{ i1y.style.display='block'; im.style.display='none'; b1y.classList.add('active'); bm.classList.remove('active'); }}
+                const periods = ['1m', '3m', '6m', '1y', 'max'];
+                periods.forEach(p => {{
+                    document.getElementById('img-' + p + '-' + ticker).style.display = (p === period) ? 'block' : 'none';
+                    document.getElementById('btn-' + p + '-' + ticker).classList.toggle('active', p === period);
+                }});
             }}
             async function shareTicker(t, p) {{
-                const s = {{ title: `📈 AI 掃描: ${{t}}`, text: `代碼 ${{t}} 目前 $${{p}}。點擊查看分析。`, url: window.location.origin + window.location.pathname + '?ticker=' + t }};
+                const s = {{ title: `📈 AI 掃描: ${{t}}`, text: `代碼 ${{t}} 目前 $${{p}}。點擊查看 AI 深度報告。`, url: window.location.origin + window.location.pathname + '?ticker=' + t }};
                 try {{ if (navigator.share) {{ await navigator.share(s); }} else {{ alert('網址已複製'); navigator.clipboard.writeText(s.url); }} }} catch (e) {{}}
             }}
             window.onload = function() {{
@@ -236,12 +243,25 @@ def create_html_report(df):
 
     cards = ""
     for _, row in df.iterrows():
-        i1, im, i1m, is_a = generate_stock_images(row['Ticker'])
+        i1m, i3m, i6m, i1y, imax, i_intra, is_a = generate_stock_images(row['Ticker'])
         ins = all_insights.get(row['Ticker'], "⚠️ 分析產出中...")
-        if i1:
+        if i1y:
             cards += f"""<div class="stock-card" id="{row['Ticker']}"><div class="card-header-row"><div>{row['Ticker']}</div><div>{row['Industry']}</div><div>{row['MarketCap']}</div><div>{row['PE']}</div><div>${row['Price']}</div><div style="color:#ffcccc;">+{row['Change']}%</div><div>{row['Volume']}</div></div>
-            <div class="toggle-bar"><button id="btn-1y-{row['Ticker']}" class="toggle-btn active" onclick="switchPeriod('{row['Ticker']}', '1y')">📅 1Y 日線</button><button id="btn-max-{row['Ticker']}" class="toggle-btn" onclick="switchPeriod('{row['Ticker']}', 'max')">♾️ MAX (Up to 3Y)</button></div>
-            <div class="chart-stack"><img id="img-1y-{row['Ticker']}" src="data:image/png;base64,{i1}"><img id="img-max-{row['Ticker']}" src="data:image/png;base64,{im}" style="display:none;"><img src="data:image/png;base64,{i1m}"></div>
+            <div class="toggle-bar">
+                <button id="btn-1m-{row['Ticker']}" class="toggle-btn" onclick="switchPeriod('{row['Ticker']}', '1m')">1M</button>
+                <button id="btn-3m-{row['Ticker']}" class="toggle-btn" onclick="switchPeriod('{row['Ticker']}', '3m')">3M</button>
+                <button id="btn-6m-{row['Ticker']}" class="toggle-btn" onclick="switchPeriod('{row['Ticker']}', '6m')">6M</button>
+                <button id="btn-1y-{row['Ticker']}" class="toggle-btn active" onclick="switchPeriod('{row['Ticker']}', '1y')">1Y</button>
+                <button id="btn-max-{row['Ticker']}" class="toggle-btn" onclick="switchPeriod('{row['Ticker']}', 'max')">MAX</button>
+            </div>
+            <div class="chart-stack">
+                <img id="img-1m-{row['Ticker']}" src="data:image/png;base64,{i1m}" style="display:none;">
+                <img id="img-3m-{row['Ticker']}" src="data:image/png;base64,{i3m}" style="display:none;">
+                <img id="img-6m-{row['Ticker']}" src="data:image/png;base64,{i6m}" style="display:none;">
+                <img id="img-1y-{row['Ticker']}" src="data:image/png;base64,{i1y}">
+                <img id="img-max-{row['Ticker']}" src="data:image/png;base64,{imax}" style="display:none;">
+                <img src="data:image/png;base64,{i_intra}">
+            </div>
             <div class="analysis-box"><strong>🛡️ AI 策略師深度診斷：</strong><br>{ins}<div class="btn-group"><button class="action-btn share-btn" onclick="shareTicker('{row['Ticker']}', '{row['Price']}')">📲 分享此股票</button><a href="#top" class="action-btn">⬆ 返回總表</a></div></div></div>"""
     
     rows_h = get_rows_html(df)
@@ -249,7 +269,7 @@ def create_html_report(df):
         f.write(build_page(True) + rows_h + "</tbody></table></div>" + cards + "</div></body></html>")
     with open(f"history/report_{today_str}.html", "w", encoding="utf-8") as f: 
         f.write(build_page(False) + rows_h + "</tbody></table></div>" + cards + "</div></body></html>")
-    print(f"✅ v1.6.1 產出完成。模型：{TARGET_MODEL}")
+    print(f"✅ v1.7.0 產出完成。高清紅綠成交量與五段時段已就緒。")
 
 if __name__ == "__main__":
     if is_market_open_today():
