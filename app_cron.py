@@ -19,7 +19,7 @@ except ImportError:
 # ==========================================
 VERSION = "v1.7.0"
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
-TARGET_MODEL = "models/gemini-3-flash"
+TARGET_MODEL = "models/gemini-2.5-flash"
 TEST_MODE = False 
 
 # ==========================================
