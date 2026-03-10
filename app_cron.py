@@ -1,5 +1,5 @@
-# 版本號碼：v1.7.5
-print(">>> [系統啟動] v1.7.5 穩定營運版：智慧等待邏輯、API 強制握手、高清五段紅綠視覺...")
+# 版本號碼：v1.8.1
+print(">>> [系統啟動] v1.8.1 全功能修復版：Gemini 3 Flash、4K解析度、五段時段全開、100M/20%門檻...")
 
 import os, time, datetime, io, base64, requests, glob, json
 import pandas as pd
@@ -17,13 +17,13 @@ except ImportError:
 # ==========================================
 # 1. 核心參數
 # ==========================================
-VERSION = "v1.7.5"
+VERSION = "v1.8.1"
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
-TARGET_MODEL = "gemini-1.5-flash" # 目前最穩定版本
+TARGET_MODEL = "models/gemini-3-flash" # 使用最新 3 Flash
 TEST_MODE = False 
 
 # ==========================================
-# 2. 數據抓取與精準過濾 (市值>100M & 漲幅<20%)
+# 2. 數據抓取與精準過濾 (100M / 20% / Shell Filter)
 # ==========================================
 def parse_mkt_cap(val_str):
     try:
@@ -46,7 +46,7 @@ def is_market_open_today():
     except: return True
 
 def fetch_and_filter_stocks():
-    print(f">>> [步驟 1] 抓取數據並執行精準篩選 (100M 市值門檻)...")
+    print(f">>> [步驟 1] 正在執行深度篩選 (漲幅<20% & 市值>100M & 排除空殼)...")
     url = "https://finviz.com/screener.ashx?v=111&f=ind_stocksonly,sh_curvol_o500,sh_price_o1,sh_relvol_o5,ta_change_u"
     headers = {'User-Agent': 'Mozilla/5.0'}
     try:
@@ -61,9 +61,10 @@ def fetch_and_filter_stocks():
                 name, industry = tds[2].text.strip(), tds[4].text.strip()
                 mkt_cap_str, change_val = tds[6].text.strip(), float(tds[9].text.strip('%'))
                 
-                # 過濾：漲幅 < 20% & 市值 > 100M & 排除空殼公司
+                # --- 核心門檻 ---
                 if change_val > 20: continue 
                 if parse_mkt_cap(mkt_cap_str) < 100000000: continue
+                # 排除空殼公司關鍵字
                 shell_kw = ["shell", "acquisition", "blank check", "spac", "unit", "capital"]
                 if any(kw in name.lower() or kw in industry.lower() for kw in shell_kw): continue
 
@@ -82,7 +83,7 @@ def fetch_and_filter_stocks():
         print(f"❌ 抓取失敗: {e}"); return pd.DataFrame()
 
 # ==========================================
-# 3. 繪圖核心 (高清 3x 渲染、紅綠成交量)
+# 3. 繪圖核心 (紅綠成交量 & 4K 解析度 scale=3)
 # ==========================================
 def generate_chart(df_plot, is_1m=False):
     rows, height = (3, 800) if not is_1m else (1, 450)
@@ -90,10 +91,10 @@ def generate_chart(df_plot, is_1m=False):
                         row_heights=[0.5, 0.28, 0.22] if not is_1m else [1.0],
                         specs=[[{"secondary_y": True}]] + [[{"secondary_y": False}]]*(rows-1))
     
-    # 紅綠成交量 (收漲為綠 0,255,0, 下跌為紅 255,0,0)
-    vol_colors = ['rgba(0,255,0,0.7)' if r['Close'] >= r['Open'] else 'rgba(255,0,0,0.7)' for _, r in df_plot.iterrows()]
+    # 紅綠成交量邏輯
+    v_colors = ['rgba(0,255,0,0.7)' if r['Close'] >= r['Open'] else 'rgba(255,0,0,0.7)' for _, r in df_plot.iterrows()]
     
-    fig.add_trace(go.Bar(x=df_plot.index, y=df_plot['Volume'], marker=dict(color=vol_colors, line_width=0), showlegend=False), row=1, col=1, secondary_y=True)
+    fig.add_trace(go.Bar(x=df_plot.index, y=df_plot['Volume'], marker=dict(color=v_colors, line_width=0), showlegend=False), row=1, col=1, secondary_y=True)
     fig.add_trace(go.Candlestick(x=df_plot.index, open=df_plot['Open'], high=df_plot['High'], low=df_plot['Low'], close=df_plot['Close'], name="Price"), row=1, col=1, secondary_y=False)
     
     if not is_1m:
@@ -101,6 +102,7 @@ def generate_chart(df_plot, is_1m=False):
         fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['SMA50'], line=dict(color='orange', width=1.8), name="MA50"), row=1, col=1)
         fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['SMA200'], line=dict(color='yellow', width=2.5), name="MA200"), row=1, col=1)
         fig.update_xaxes(showticklabels=True, row=1, col=1, tickfont=dict(size=10, color='gray'))
+        # MACD & RSI
         colors = ['rgba(0,255,0,0.9)' if v>=0 else 'rgba(255,0,0,0.9)' for v in df_plot['Hist']]
         fig.add_trace(go.Bar(x=df_plot.index, y=df_plot['Hist'], marker=dict(color=colors, line_width=0)), row=2, col=1)
         fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['MACD'], line=dict(color='#00FF00', width=2)), row=2, col=1)
@@ -111,6 +113,7 @@ def generate_chart(df_plot, is_1m=False):
 
     fig.update_yaxes(range=[0, df_plot['Volume'].max()*1.8], secondary_y=True, showgrid=False, row=1)
     fig.update_layout(height=height, width=1050, template="plotly_dark", xaxis_rangeslider_visible=False, barmode='overlay', margin=dict(l=10, r=10, t=30, b=10))
+    # 鎖定超高清 scale=3
     return base64.b64encode(fig.to_image(format="png", scale=3)).decode('utf-8')
 
 def generate_stock_images(ticker):
@@ -125,6 +128,7 @@ def generate_stock_images(ticker):
         delta=df_all['Close'].diff(); g=delta.where(delta>0,0).rolling(14, min_periods=1).mean(); l=-delta.where(delta<0,0).rolling(14, min_periods=1).mean()
         df_all['RSI']=100-(100/(1+g/l))
 
+        # --- 完整五段日線時段 ---
         m1, m3, m6, y1 = generate_chart(df_all.tail(21)), generate_chart(df_all.tail(63)), generate_chart(df_all.tail(126)), generate_chart(df_all.tail(252))
         mmax = generate_chart(df_all.tail(min(len(df_all), 756)))
 
@@ -151,50 +155,46 @@ def generate_stock_images(ticker):
             
         return m1, m3, m6, y1, mmax, img_i, bool(df_all['Close'].iloc[-1] > df_all['SMA200'].iloc[-1])
     except Exception as e:
-        print(f"⚠️ {ticker} 圖片生成失敗: {e}"); return [None]*7
+        print(f"⚠️ {ticker} 繪圖失敗: {e}"); return [None]*7
 
 # ==========================================
-# 4. 批量 AI 分析 (智慧等待版)
+# 4. 批量 AI 分析 (Gemini 3 Flash)
 # ==========================================
 def get_batch_ai_insights(df_subset, total_count, current_index):
     tickers = df_subset['Ticker'].tolist()
-    if TEST_MODE: return {t: f"<b>【測試模式】</b>：API 偵錯完成。" for t in tickers}
-    if not GEMINI_KEY: 
-        print("❌ 錯誤：找不到 GEMINI_API_KEY。")
-        return {t: "❌ 無 API KEY" for t in tickers}
+    if TEST_MODE: return {t: f"<b>【測試模式】</b>" for t in tickers}
+    if not GEMINI_KEY: return {t: "❌ 無 API KEY" for t in tickers}
     
-    summary = "".join([f"- {r['Ticker']}: ${r['Price']} ({r['Change']}%) MC:{r['MarketCap']}\n" for _, r in df_subset.iterrows()])
-    prompt = f"分析美股異動標的技術趨勢，給予 150-200 字深度建議。繁體中文。回傳 JSON：{{\"Ticker\": \"分析內容\"}} \n數據：\n{summary}"
+    summary = "".join([f"- {r['Ticker']}: ${r['Price']} ({r['Change']}%) MC:{r['MarketCap']} [{r['Industry']}]\n" for _, r in df_subset.iterrows()])
+    prompt = f"你是專業分析師。深度診斷以下股票技術趨勢、指標背離與籌碼爆量點，給予150-200字建議。繁體中文。回傳 JSON：{{\"Ticker\": \"分析內容\"}} \n數據：\n{summary}"
     
     try:
-        print(f"📡 [分析中] ({current_index}/{total_count}) 呼叫 {TARGET_MODEL}: {tickers}...")
+        print(f"📡 正在呼叫 {TARGET_MODEL} 診斷: {tickers}...")
         client = genai.Client(api_key=GEMINI_KEY)
         response = client.models.generate_content(model=TARGET_MODEL, contents=prompt)
         raw_text = response.text.strip().replace('```json', '').replace('```', '')
         insights = json.loads(raw_text)
-        print(f"✅ [成功] {tickers} 分析完成。")
-        
-        # 智慧等待：只有當後面還有股票時才需要等，避免浪費時間
-        if current_index < total_count:
-            print(f"⏳ 正在等待 50 秒以符合 API Rate Limit...")
-            time.sleep(50)
+        print(f"✅ {tickers} 分析產出完成。")
+        if current_index < total_count: time.sleep(50)
         return insights
     except Exception as e:
-        print(f"❌ [API 報錯] {tickers}: {str(e)}")
-        return {t: f"⚠️ 分析產出中... (原因: {str(e)[:50]})" for t in tickers}
+        print(f"❌ [API 失敗] {tickers}: {str(e)}")
+        return {t: f"⚠️ 分析產出中... (錯誤原因: {str(e)[:40]})" for t in tickers}
 
 # ==========================================
-# 5. HTML 生成
+# 5. HTML 生成 (五段時段切換 & 手機優化)
 # ==========================================
 def create_html_report(df):
     ny_tz = pytz.timezone('America/New_York'); today_ny = datetime.datetime.now(ny_tz).strftime("%Y-%m-%d")
     today_str = datetime.date.today().strftime("%Y%m%d")
     os.makedirs("history", exist_ok=True); history_files = sorted(glob.glob("history/report_*.html"), reverse=True)
+    
     l_main = "".join([f'<a href="./history/report_{f.split("_")[1][:8]}.html" class="history-item">{f.split("_")[1][:4]}-{f.split("_")[1][4:6]}-{f.split("_")[1][6:8]}</a>' for f in history_files])
     l_hist = "".join([f'<a href="./report_{f.split("_")[1][:8]}.html" class="history-item">{f.split("_")[1][:4]}-{f.split("_")[1][4:6]}-{f.split("_")[1][6:8]}</a>' for f in history_files])
+    
     def get_nav(is_m):
-        h = "" if is_m else '<a href="../index.html" class="history-item" style="background:#003366;color:white;font-weight:bold;">🏠 返回最新</a>'
-        return f'<div class="history-bar"><div style="font-weight:bold;margin-right:10px;color:#003366;white-space:nowrap;">📅 存檔：</div>{h}{l_main if is_m else l_hist}</div>'
+        home = "" if is_m else '<a href="../index.html" class="history-item" style="background:#003366;color:white;font-weight:bold;">🏠 返回最新</a>'
+        return f'<div class="history-bar"><div style="font-weight:bold;margin-right:10px;color:#003366;white-space:nowrap;">📅 存檔：</div>{home}{l_main if is_m else l_hist}</div>'
 
     all_insights = {}
     total_len = len(df)
@@ -204,7 +204,7 @@ def create_html_report(df):
         all_insights.update(get_batch_ai_insights(chunk, total_len, i + len(chunk)))
 
     def build_page(is_m):
-        return f"""<!DOCTYPE html><html lang="zh-TW"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><link rel="icon" href="https://cdn-icons-png.flaticon.com/512/2422/2422796.png"><title>AI 美股掃描</title>
+        return f"""<!DOCTYPE html><html lang="zh-TW"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><link rel="icon" href="https://cdn-icons-png.flaticon.com/512/2422/2422796.png"><title>AI 美股深度掃描 {VERSION}</title>
         <style>
             body {{ font-family: sans-serif; background: #f0f2f5; padding: 10px; margin: 0; }} .container {{ max-width: 1100px; margin: 0 auto; }}
             .history-bar {{ background: white; padding: 15px; border-radius: 8px; margin-bottom: 20px; display: flex; align-items: center; overflow-x: auto; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }}
@@ -220,7 +220,7 @@ def create_html_report(df):
             .toggle-btn {{ background: #555; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 11px; }} .toggle-btn.active {{ background: #2563eb; font-weight: bold; }}
             .analysis-box {{ padding: 25px; line-height: 1.8; background: #f8fafc; font-size: 14px; border-top: 1px solid #eee; }}
             .btn-group {{ margin-top: 15px; display: flex; justify-content: flex-end; gap: 10px; }}
-            .action-btn {{ background: #003366; color: white; text-decoration: none; padding: 10px 18px; border-radius: 6px; font-size: 12px; font-weight: bold; border: none; cursor: pointer; }} .share-btn {{ background: #2563eb; }}
+            .action-btn {{ background: #003366; color: white; text-decoration: none; padding: 10px 18px; border-radius: 6px; font-size: 12px; font-weight: bold; border: none; cursor: pointer; }}
         </style>
         <script>
             function switchPeriod(ticker, period) {{
@@ -232,17 +232,13 @@ def create_html_report(df):
                     if(btn) btn.classList.toggle('active', p === period);
                 }});
             }}
-            async function shareTicker(t, p) {{
-                const s = {{ title: `📈 AI 掃描: ${{t}}`, text: `代碼 ${{t}} 目前 $${{p}}。點擊查看分析報告。`, url: window.location.origin + window.location.pathname + '?ticker=' + t }};
-                try {{ if (navigator.share) {{ await navigator.share(s); }} else {{ alert('網址已複製'); navigator.clipboard.writeText(s.url); }} }} catch (e) {{}}
-            }}
             window.onload = function() {{
                 const p = new URLSearchParams(window.location.search); const t = p.get('ticker');
                 if (t) {{ const e = document.getElementById(t.toUpperCase()); if (e) {{ setTimeout(() => {{ e.scrollIntoView({{ behavior: 'smooth', block: 'start' }}); }}, 600); }} }}
             }};
         </script></head><body><div class="container" id="top">{get_nav(is_m)}
         <h1 style="color:#003366; text-align:center; margin-bottom: 5px;">📊 美股 AI 全量深度報告 {VERSION}</h1>
-        <h3 style="color:#666; text-align:center; margin-top: 0; font-weight: normal;">🇺🇸 美股交易日：{today_ny}</h3>
+        <h3 style="color:#666; text-align:center; margin-top: 0; font-weight: normal;">🇺🇸 美股交易日：{today_ny} (EST)</h3>
         <div class="summary-table-wrapper"><table class="summary-table"><thead><tr><th>代碼</th><th>公司</th><th>產業</th><th>市值</th><th>P/E</th><th>價格</th><th>漲幅</th><th>成交量</th></tr></thead><tbody>"""
 
     def get_rows_html(df_in):
@@ -272,12 +268,12 @@ def create_html_report(df):
                 <img id="img-max-{row['Ticker']}" src="data:image/png;base64,{mmax}" style="display:none;">
                 <img src="data:image/png;base64,{img_i}">
             </div>
-            <div class="analysis-box"><strong>🛡️ AI 策略師深度診斷：</strong><br>{ins}<div class="btn-group"><button class="action-btn share-btn" onclick="shareTicker('{row['Ticker']}', '{row['Price']}')">📲 分享此股票</button><a href="#top" class="action-btn">⬆ 返回總表</a></div></div></div>"""
+            <div class="analysis-box"><strong>🛡️ AI 策略師深度診斷：</strong><br>{ins}<div class="btn-group"><a href="#top" class="action-btn">⬆ 返回總表</a></div></div></div>"""
     
     rows_h = get_rows_html(df)
     with open("index.html", "w", encoding="utf-8") as f: f.write(build_page(True) + rows_h + "</tbody></table></div>" + cards + "</div></body></html>")
     with open(f"history/report_{today_str}.html", "w", encoding="utf-8") as f: f.write(build_page(False) + rows_h + "</tbody></table></div>" + cards + "</div></body></html>")
-    print(f"✅ v1.7.5 產出完成。")
+    print(f"✅ v1.8.1 產出完成。")
 
 if __name__ == "__main__":
     if is_market_open_today():
